@@ -51,7 +51,7 @@ class Parser:
 
         for nearby_header in nearby_headers:
             if any(desirable_header in nearby_header["text"].lower() for desirable_header in DESIRABLE_HEADERS):
-                print("GOODLIST", [text_object["text"] for text_object in nearby_headers])
+                # print("GOODLIST", [text_object["text"] for text_object in nearby_headers])
                 return True
         else:
             return False
@@ -92,7 +92,7 @@ class Parser:
                     adjacent_headers = self.find_nearby_headers(table_date)
 
                     headers = group_adjacent_text(adjacent_headers, expected_gap=5)
-                    print([header["text"] for header in headers])
+                    # print([header["text"] for header in headers])
 
                     # for header in headers:
                     #     if "date" in header["text"].lower():
@@ -130,7 +130,7 @@ class Parser:
                     # print([value["text"] for value in values])
                 potential_dates.append(words_list[i])
 
-        print([date["text"] for date in potential_dates])
+        # print([date["text"] for date in potential_dates])
         dates = []
         i = 0
 
@@ -223,8 +223,5 @@ class Parser:
         # print(df)
         self.data = df
         return df
-        
 
-parser = Parser("test.pdf")
-print(parser.parse())
     
