@@ -1,3 +1,6 @@
+import dateparser
+from dateparser.search import search_dates
+
 def combine_text_objects(text_objects):
     index = min(x["index"] for x in text_objects)
     text = ' '.join(x["text"] for x in text_objects)
@@ -25,6 +28,7 @@ def combine_text_objects(text_objects):
         'direction': 'ltr'
     }
 
+# TODO: Make this work better with multiline text
 def group_adjacent_text(text_objects, expected_gap=3):
         nearby_text_objects = sorted(text_objects, key=lambda x: x["x0"])
         grouped_text = []
@@ -54,3 +58,17 @@ def group_adjacent_text(text_objects, expected_gap=3):
         output_text = [combine_text_objects(group) for group in grouped_text]
         # print(grouped_headers)
         return output_text
+
+def is_valid_date(date_string):
+    parsed = dateparser.parse(date_string)
+    
+    if parsed:
+        info = search_dates(date_string, settings={'REQUIRE_PARTS': ['day', 'month', 'year'], 'STRICT_PARSING': True})
+        
+        if info:
+            return "Valid"
+        else:
+            # print("Incomplete date")
+            return "Incomplete"
+    else:
+        return "Invalid"

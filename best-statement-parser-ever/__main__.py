@@ -4,7 +4,7 @@ import pandas as pd
 import dateparser
 from dateparser.search import search_dates
 
-with pdfplumber.open("test3.pdf") as pdf:
+with pdfplumber.open("test5.pdf") as pdf:
     first_page = pdf.pages[1]
     # print([first_page.chars[i]["text"] for i in range(1000)])
     im = first_page.to_image(resolution=150)
@@ -390,10 +390,6 @@ with pdfplumber.open("test3.pdf") as pdf:
     # parse_dates_center_aligned(dates)
     # parse_dates_bottom_aligned(dates)
 
-
-
-    
-    
 
 if __name__ == "__main__":
     pass
