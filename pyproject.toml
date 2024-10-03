@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "best-statement-parser-ever"
+version = "0.1.0"
+description = ""
+authors = ["Moulik <zstriker2004@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pdfplumber = "^0.11.4"
+pandas = "^2.2.3"
+dateparser = "^1.2.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
