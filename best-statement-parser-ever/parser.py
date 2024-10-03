@@ -11,6 +11,7 @@ class Parser:
         self.headers = []
         self.table_date = None
         self.date_column = None
+        self.date_rows = None
 
     def parse(self):
         with pdfplumber.open(self.statement) as pdf:
@@ -85,6 +86,9 @@ class Parser:
             # print("Not a date")
             return "Invalid"
     
+    def find_header_padding(self, date_header):
+        return [25, 25]
+    
     def find_date_header(self):
         words_list = self.words_list
         for i in range(len(words_list)):
@@ -110,7 +114,7 @@ class Parser:
                     #     if "date" in header["text"].lower():
                     #         date_column = header
                     #         break
-                    padding = self.find_padding(table_date)
+                    padding = self.find_header_padding(table_date)
 
                     date_columns = (
                         table_date["x0"] - padding[0], 
@@ -123,6 +127,56 @@ class Parser:
                     break
         else:
             raise Exception("Date header not found")
+    
+    # TODO: Refactor this monstrosity of a method
+    def find_date_rows(self):
+        words_list = self.words_list
+        date_column = self.date_column
+
+        potential_dates = []
+
+        table_date_index = self.table_date["index"]
+
+        for i in range(table_date_index + 1, len(words_list)):
+            if words_list[i]["x0"] > date_column[0] and words_list[i]["x1"] < date_column[1]:
+                print(words_list[i]["x0"],words_list[i]["x1"])
+                    # nearby = find_nearby_headers(words_list[i])
+                    # values = group_adjacent_headers(nearby)
+                    # print([value["text"] for value in values])
+                potential_dates.append(words_list[i])
+
+        print([date["text"] for date in potential_dates])
+        dates = []
+        i = 0
+
+        while i in range(len(potential_dates)):
+            match self.is_valid_date(potential_dates[i]["text"]):
+                case "Valid":
+                    dates.append(potential_dates[i])
+                case "Incomplete":
+                    if i + 1 < len(potential_dates):
+                        match self.is_valid_date(combine_text_objects([potential_dates[i], potential_dates[i+1]])["text"]):
+                            case "Valid":
+                                dates.append(combine_text_objects([potential_dates[i], potential_dates[i+1]]))
+                                i += 1
+                            case "Incomplete":
+                                match self.is_valid_date(combine_text_objects([potential_dates[i], potential_dates[i+1], potential_dates[i+2]])["text"]):
+                                    case "Valid":
+                                        dates.append(combine_text_objects([potential_dates[i], potential_dates[i+1], potential_dates[i+2]]))
+                                        i += 2
+                                    case "Incomplete":
+                                        pass
+                                    case "Invalid":
+                                        pass
+                            case "Invalid":
+                                pass
+                case "Invalid":
+                    pass
+            i += 1
+        
+        print([date["text"] for date in dates])
+
+        self.date_rows = dates
         
     
         
