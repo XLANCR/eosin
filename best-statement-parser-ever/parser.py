@@ -1,7 +1,8 @@
 import pdfplumber
-from utils import combine_text_objects
+from utils import combine_text_objects, group_adjacent_text
 import dateparser
 from dateparser.search import search_dates
+import pandas as pd
 
 class Parser:
     def __init__(self, statement):
@@ -10,8 +11,9 @@ class Parser:
         self.words_list = None
         self.headers = []
         self.table_date = None
-        self.date_column = None
+        self.date_column_dimension = None
         self.date_rows = None
+        self.data = None
 
     def parse(self):
         with pdfplumber.open(self.statement) as pdf:
@@ -116,14 +118,14 @@ class Parser:
                     #         break
                     padding = self.find_header_padding(table_date)
 
-                    date_columns = (
+                    date_column_dimensions = (
                         table_date["x0"] - padding[0], 
                         table_date["x1"] + padding[1]
                     )
-                    print(date_columns)
+                    print(date_column_dimensions)
 
                     self.table_date = table_date
-                    self.date_columns = date_columns                    
+                    self.date_column_dimensions = date_column_dimensions
                     break
         else:
             raise Exception("Date header not found")
@@ -131,14 +133,14 @@ class Parser:
     # TODO: Refactor this monstrosity of a method
     def find_date_rows(self):
         words_list = self.words_list
-        date_column = self.date_column
+        date_column_dimensions = self.date_column_dimension
 
         potential_dates = []
 
         table_date_index = self.table_date["index"]
 
         for i in range(table_date_index + 1, len(words_list)):
-            if words_list[i]["x0"] > date_column[0] and words_list[i]["x1"] < date_column[1]:
+            if words_list[i]["x0"] > date_column_dimensions[0] and words_list[i]["x1"] < date_column_dimensions[1]:
                 print(words_list[i]["x0"],words_list[i]["x1"])
                     # nearby = find_nearby_headers(words_list[i])
                     # values = group_adjacent_headers(nearby)
@@ -177,8 +179,63 @@ class Parser:
         print([date["text"] for date in dates])
 
         self.date_rows = dates
-        
     
+    def categorize_text_into_headers(self, text_objects):
+        headers = self.headers
+        categorized_text = {header["text"]: "" for header in headers}
+
+        for text in text_objects:
+            for header in headers:
+                if max(header["x1"], text["x1"]) - min(header["x0"], text["x0"]) < header["width"] + text["width"]:
+                    categorized_text[header["text"]] += text["text"]
+                    break
+            else:
+                for header in headers:
+                    if header["x0"] > text["x0"]:
+                        categorized_text[header["text"]] = text["text"]
+                        break
+        return categorized_text
+    
+    def parse_dates_top_aligned(self):
+        dates = self.date_rows
+        words_list = self.words_list
+        headers = self.headers
+        table_date_index = self.table_date["index"]
+
+        gaps_between_rows = []
+        table = {}
+
+        # print([date["text"] for date in dates])
+        for i in range(len(dates) - 1):
+            gaps_between_rows.append(dates[i+1]["top"] - dates[i]["bottom"])
+        
+        print(gaps_between_rows)
+        
+        for i in range(len(dates) - 1):
+            potential_headers = [dates[i]]
+            top = dates[i]["top"] - 2
+            bottom = dates[i]["bottom"] + gaps_between_rows[i] + 2
+            print(dates[i]["text"], gaps_between_rows[i], (dates[i]["top"] - 2),(dates[i]["bottom"] + gaps_between_rows[i] + 2)  )
+
+            for j in range(table_date_index, len(words_list)):
+                if words_list[j]["top"] > top and words_list[j]["bottom"] <  bottom and words_list[j]["x0"] > dates[i]["x0"]:
+                    potential_headers.append(words_list[j])
+        
+            # print([header["text"] for header in potential_headers])
+            grouped_row_text = group_adjacent_text(potential_headers)
+            # print([header["text"] for header in bruh])
+            categorized_text = self.categorize_text_into_headers(grouped_row_text)
+            for ctext in categorized_text:
+                if ctext not in table:
+                    table[ctext] = [categorized_text[ctext]]
+                else:
+                    table[ctext].append(categorized_text[ctext])
+            # if i >1:
+            #     break
+        # print(table)
+        df = pd.DataFrame(table)
+        self.data = df
+        return df
         
 
 parser = Parser("test.pdf")

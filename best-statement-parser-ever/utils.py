@@ -24,3 +24,33 @@ def combine_text_objects(text_objects):
         'width': width,
         'direction': 'ltr'
     }
+
+def group_adjacent_text(text_objects, expected_gap=3):
+        nearby_text_objects = sorted(text_objects, key=lambda x: x["x0"])
+        grouped_text = []
+        # print([text["text"] for text in nearby_text_objects])
+
+        nearest_x1 = nearby_text_objects[0]["x1"]
+        words_list_grouping = [nearby_text_objects[0]]
+        # for i in range(1, len(nearby_text_objects)):
+
+  
+        for i in range(1, len(nearby_text_objects)):
+            if nearby_text_objects[i]["x0"] - nearest_x1 < expected_gap:
+                # print("NEAREST X1", nearest_x1)
+                # print(nearby_text_objects[i]["x0"])
+                # print("gap is", nearby_text_objects[i]["x0"] - nearest_x1)
+                words_list_grouping.append(nearby_text_objects[i])
+                nearest_x1 = nearby_text_objects[i]["x1"]
+            else:
+                # here we are sorting so the header that is higher on the page ( has lower y value) gets shown first, otherwise it would get shown second
+                words_list_grouping.sort(key=lambda x: x["bottom"])
+                grouped_text.append(words_list_grouping)
+                words_list_grouping = [nearby_text_objects[i]]
+                nearest_x1 = nearby_text_objects[i]["x1"]
+
+        grouped_text.append(words_list_grouping) # Append the last grouping since that doesn't get appended above
+
+        output_text = [combine_text_objects(group) for group in grouped_text]
+        # print(grouped_headers)
+        return output_text
