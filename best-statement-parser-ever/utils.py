@@ -53,7 +53,7 @@ def group_adjacent_text(text_objects, expected_gap=3):
                 words_list_grouping = [nearby_text_objects[i]]
                 nearest_x1 = nearby_text_objects[i]["x1"]
 
-        grouped_text.append(words_list_grouping) # Append the last grouping since that doesn't get appended above
+        grouped_text.append(words_list_grouping) # The last grouping doesnt get appended and its required in both cases above so we append here
 
         output_text = [combine_text_objects(group) for group in grouped_text]
         # print(grouped_headers)
