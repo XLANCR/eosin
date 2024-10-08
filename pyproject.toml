@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "best-statement-parser-ever"
-version = "0.1.0"
-description = ""
+name = "eosin"
+version = "0.1.1"
+description = "Library to extract data from any bank statement."
 authors = ["Moulik <zstriker2004@gmail.com>"]
 readme = "README.md"
 
