@@ -1,7 +1,6 @@
+import pandas as pd
 import pdfplumber
 from utils import combine_text_objects, group_adjacent_text, is_valid_date
-
-import pandas as pd
 
 
 class Parser:
@@ -23,6 +22,8 @@ class Parser:
             self._find_date_header()
             self._find_date_rows()
             self._parse_dates_top_aligned()
+            # self._parse_dates_center_aligned()
+            # self._parse_dates_bottom_aligned()
             return self.data
 
     def _get_words(self):
@@ -248,6 +249,108 @@ class Parser:
             potential_headers = [dates[i]]
             top = dates[i]["top"] - 2
             bottom = dates[i]["bottom"] + gaps_between_rows[i] + 2
+            # print(dates[i]["text"], gaps_between_rows[i], (dates[i]["top"] - 2),(dates[i]["bottom"] + gaps_between_rows[i] + 2)  )
+
+            for j in range(table_date_index, len(words_list)):
+                if (
+                    words_list[j]["top"] > top
+                    and words_list[j]["bottom"] < bottom
+                    and words_list[j]["x0"] > dates[i]["x0"]
+                ):
+                    potential_headers.append(words_list[j])
+
+            # print([header["text"] for header in potential_headers])
+            grouped_row_text = group_adjacent_text(potential_headers)
+
+            # print("HEADER GROUPS", [header["text"] for header in grouped_row_text])
+            categorized_text = self._categorize_text_into_headers(grouped_row_text)
+            # print("CATEGORIZED TEXT", categorized_text)
+            for ctext in categorized_text:
+                if ctext not in table:
+                    table[ctext] = [categorized_text[ctext]]
+                else:
+                    table[ctext].append(categorized_text[ctext])
+            # if i >1:
+            #     break
+        # print("TABLE", table)
+        df = pd.DataFrame(table)
+        # print(df)
+        self.data = df
+        return df
+
+    def _parse_dates_center_aligned(self):
+        dates = self.date_rows
+        words_list = self.words_list
+        headers = self.headers
+        table_date_index = self.table_date["index"]
+
+        gaps_between_rows = []
+        table = {}
+
+        # print([date["text"] for date in dates])
+        for i in range(len(dates) - 1):
+            gaps_between_rows.append(dates[i + 1]["top"] - dates[i]["bottom"])
+
+        # print(gaps_between_rows)
+
+        for i in range(len(dates) - 1):
+            potential_headers = [dates[i]]
+            if i == 0:
+                top = dates[i]["top"] - gaps_between_rows[i] - 2
+            else:
+                top = dates[i]["top"] - gaps_between_rows[i - 1] // 2 - 2
+            bottom = dates[i]["bottom"] + gaps_between_rows[i] // 2 + 2
+            # print(dates[i]["text"], gaps_between_rows[i], (dates[i]["top"] - 2),(dates[i]["bottom"] + gaps_between_rows[i] + 2)  )
+
+            for j in range(table_date_index, len(words_list)):
+                if (
+                    words_list[j]["top"] > top
+                    and words_list[j]["bottom"] < bottom
+                    and words_list[j]["x0"] > dates[i]["x0"]
+                ):
+                    potential_headers.append(words_list[j])
+
+            # print([header["text"] for header in potential_headers])
+            grouped_row_text = group_adjacent_text(potential_headers)
+
+            # print("HEADER GROUPS", [header["text"] for header in grouped_row_text])
+            categorized_text = self._categorize_text_into_headers(grouped_row_text)
+            # print("CATEGORIZED TEXT", categorized_text)
+            for ctext in categorized_text:
+                if ctext not in table:
+                    table[ctext] = [categorized_text[ctext]]
+                else:
+                    table[ctext].append(categorized_text[ctext])
+            # if i >1:
+            #     break
+        # print("TABLE", table)
+        df = pd.DataFrame(table)
+        # print(df)
+        self.data = df
+        return df
+
+    def _parse_dates_bottom_aligned(self):
+        dates = self.date_rows
+        words_list = self.words_list
+        headers = self.headers
+        table_date_index = self.table_date["index"]
+
+        gaps_between_rows = []
+        table = {}
+
+        # print([date["text"] for date in dates])
+        for i in range(len(dates) - 1):
+            gaps_between_rows.append(dates[i + 1]["top"] - dates[i]["bottom"])
+
+        # print(gaps_between_rows)
+
+        for i in range(len(dates) - 1):
+            potential_headers = [dates[i]]
+            if i == 0:
+                top = dates[i]["top"] - gaps_between_rows[i] - 2
+            else:
+                top = dates[i]["top"] - gaps_between_rows[i - 1] - 2
+            bottom = dates[i]["bottom"] + 2
             # print(dates[i]["text"], gaps_between_rows[i], (dates[i]["top"] - 2),(dates[i]["bottom"] + gaps_between_rows[i] + 2)  )
 
             for j in range(table_date_index, len(words_list)):
