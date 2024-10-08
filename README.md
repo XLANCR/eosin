@@ -1,39 +1,32 @@
-# Why eosin?
+# Eosin: A Comprehensive Bank Statement Cell Parsing Tool
 
-Eosin is a coloring agent used to distinguish cells. 
-This package is used to differentiate cells from bank statement pdfs.
+**Eosin** is a tool built to tackle one of the trickiest problems in data extraction—parsing bank statements. If you've ever looked at bank statements from different institutions, you know how wildly they can vary in structure, format, and content. Eosin aims to make sense of that chaos by using clever techniques to extract data from these complex PDFs, no matter how inconsistent or irregular they are.
 
-Bank statements vary enormously when it comes to lines, spacing, column heights/widths, row heights/widths, borders, colors, column names, date formats, cell spacing, fields, and much much more.
+## Why the Name Eosin?
 
-It is fairly easy to create a parser for a particular bank statement but creating one that'll work on any statement regardless of the above mentioned inconsistencies requires one to consider the hardest version of the problem,
-so that all subcases/variants are resolved automatically.
+In biology, *eosin* is a dye that helps differentiate cells under a microscope. In a similar way, this package is designed to differentiate and extract data from the messy structures of bank statements. While creating a parser for a single, specific statement format is easy, Eosin is built to handle the hardest version of the problem—working with all kinds of inconsistent formats and messy data.
 
-We assume that the statement has no borders, no spacing consistency, no text consistency, no standard date format, no column format, no row format, no colors, distributed tables, multiple pages, random text etc. If we solve this then we can safely say it'll work for almost any bank statement.
+### What Makes Bank Statements So Hard to Parse?
 
-Here is a list of all problems I found - 
-- Headers are never consistent
-- Cell size is inconsistent between adjacent cells
-- Row size is inconsistent between adjacent rows
-- Column size is inconsistent between adjacent columns
-- Can't rely on borders, as they may or may not be present
-- Dates can be in a single line or even multiline
-- Date format isnt consistent
-- First page has headers, second page may or may not
-- Each date in its cell can be at the top, bottom, or middle of the cell
-- Some columns may be empty on certain rows (This one really sucks to implement) :/
-- There may be random rows in between with unneccesary information
-- text in cells may be center alighned, left aligned or right aligned
-- There may be multiple date headers in the table
-- Table headers vary a lot between statements
-- Certain statements have no spacing between nearby rows
-- Currency format varies wildly
-- Sometimes the dates are spread across multiple lines
-- Some statements are hard for even humans to read, much less an algorithm
+Bank statements are notorious for being a nightmare to automate due to:
+1. **Inconsistent Headers**: Each statement has its own unique headers, which can even change across pages.
+2. **Cell Size Variations**: Adjacent cells aren’t always the same size.
+3. **Irregular Rows and Columns**: Rows and columns often don’t follow consistent heights and widths.
+4. **No Reliable Borders**: Borders may or may not exist, so we can’t rely on them.
+5. **Multiline Dates**: Dates might be crammed into one line or spread across two or more.
+6. **Date Format Chaos**: There’s no consistent way dates are presented—every statement seems to have its own idea.
+7. **Missing Data**: Some rows might have empty columns, especially for certain transactions.
+8. **Random Rows**: There are often irrelevant or random rows of data that throw everything off.
+9. **Alignment Problems**: Text inside cells might be aligned in any direction—center, left, or right.
+10. **Varying Headers**: Table headers can change or overlap as you go from page to page.
+11. **No Consistent Row Spacing**: Nearby rows might be squeezed together or spaced far apart.
+12. **Currency Format Mess**: Currency symbols and formats can be completely different between statements.
+13. **Unreadable Statements**: Some statements are just hard to read—even for a human.
 
-Here is a list of assumptions we make - 
+### The Assumptions We Make
 
-- We can use the date header as a source of truth, along with checking other lateral headers to see if its the table date header. We then use this header as the basis for the columns and use the dates found within theis column as the basis ofr rows
-- We find all dates and use them as reference for the cell, ignoring text that doesn't fit the date format, while also trying to align spread out/broken dates
-- If the date is not valid, we try to manipulate values above and below to see if its because its incomplete, otherwise we discard
-- Table headers dont overlap with each other's fields i.e there is no overlapping text
-- We assume x and y spacing remains almost consistent between different pages
+To manage all these headaches, we made a few assumptions:
+- **Dates Are Key**: We treat the date header as the most reliable thing on the page. We use it to figure out the structure of the table and align everything else around it.
+- **Smart Date Parsing**: Eosin will try to pull together broken or spread-out dates and align them. If it still doesn’t make sense, we’ll ignore it and move on.
+- **Headers Don’t Overlap**: We assume headers don’t interfere with each other, making them useful to anchor the rest of the data.
+- **Spacing is Reasonably Consistent Across Pages**: While row and column spacing might be all over the place on one page, we assume it doesn’t change too wildly across the different pages.
