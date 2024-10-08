@@ -10,8 +10,10 @@ python = "^3.11"
 pdfplumber = "^0.11.4"
 pandas = "^2.2.3"
 dateparser = "^1.2.0"
-pytest = "^8.3.3"
 
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
 
 [build-system]
 requires = ["poetry-core"]
