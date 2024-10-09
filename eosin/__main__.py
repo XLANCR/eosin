@@ -1,6 +1,5 @@
-from parser import Parser as PDFParser
 import argparse
-
+from parser import Parser as PDFParser
 
 if __name__ == "__main__":
     try:

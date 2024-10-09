@@ -1,7 +1,6 @@
+import pandas as pd
 import pdfplumber
 from utils import combine_text_objects, group_adjacent_text, is_valid_date
-
-import pandas as pd
 
 
 class Parser:
@@ -77,7 +76,6 @@ class Parser:
 
     # TODO: properly implement this function
     def __find_date_header_padding(self, date_header):
-
         header_list = self._find_nearby_headers(date_header)
 
         horizontal_gaps = []
@@ -105,7 +103,6 @@ class Parser:
                 # print(potential_date)
 
                 if self._is_table_date(potential_date):
-
                     table_date = potential_date
 
                     adjacent_headers = self._find_nearby_headers(table_date)
