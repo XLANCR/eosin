@@ -1,0 +1,16 @@
+respect-gitignore = false
+[format]
+# Enable reformatting of code snippets in docstrings.
+docstring-code-format = true
+
+[lint]
+# Enable all `pydocstyle` rules, limiting to those that adhere to the
+# Google convention via `convention = "google"`, below.
+select = ["D"]
+
+# On top of the Google convention, disable `D417`, which requires
+# documentation for every function parameter.
+ignore = ["D417","D205","D100","D107"]
+
+[lint.pydocstyle]
+convention = "google"

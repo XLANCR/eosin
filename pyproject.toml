@@ -14,6 +14,10 @@ dateparser = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
+tox = "^4.21.2"
+pylint = "^3.3.1"
+pyright = "^1.1.383"
+ruff = "^0.6.9"
 
 [build-system]
 requires = ["poetry-core"]
