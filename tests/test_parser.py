@@ -1,6 +1,7 @@
 from eosin.parser import Parser
 import pytest
 from os import system
+from pandas import DataFrame
 
 
 @pytest.fixture
@@ -11,4 +12,4 @@ def parser():
 
 
 def test_parser_pdf(parser):
-    assert parser.parse() != None, True
+    assert type(parser.parse()), DataFrame
