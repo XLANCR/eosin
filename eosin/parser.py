@@ -103,7 +103,7 @@ class Parser:
                     self.headers = headers
                     break
         else:
-            raise Exception("Date header not found")
+            raise ValueError("Date header not found")
 
     # TODO: Refactor this monstrosity of a method
     def _find_date_rows(self):
