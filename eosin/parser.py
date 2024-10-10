@@ -62,8 +62,7 @@ class Parser:
                 for desirable_header in DESIRABLE_HEADERS
             ):
                 return True
-        else:
-            return False
+        return False
 
     # TODO: properly implement this function
     def __find_date_header_padding(self, date_header):
