@@ -63,7 +63,7 @@ def group_adjacent_text(text_objects, expected_gap=3):
 
 def is_valid_date(date_string):
     parsed = dateparser.parse(date_string)
-
+    stat = "Invalid"
     if parsed:
         info = search_dates(
             date_string,
@@ -74,8 +74,8 @@ def is_valid_date(date_string):
         )
 
         if info:
-            return "Valid"
+            stat = "Valid"
         else:
-            return "Incomplete"
-    else:
-        return "Invalid"
+            stat = "Incomplete"
+
+    return stat
