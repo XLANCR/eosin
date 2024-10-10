@@ -1,6 +1,6 @@
 import pandas as pd
 import pdfplumber
-from utils import combine_text_objects, group_adjacent_text, is_valid_date
+from eosin.utils import combine_text_objects, group_adjacent_text, is_valid_date
 
 
 class Parser:
