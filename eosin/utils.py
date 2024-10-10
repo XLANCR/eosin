@@ -38,17 +38,12 @@ def combine_text_objects(text_objects):
 def group_adjacent_text(text_objects, expected_gap=3):
     nearby_text_objects = sorted(text_objects, key=lambda x: x["x0"])
     grouped_text = []
-    # print([text["text"] for text in nearby_text_objects])
 
     nearest_x1 = nearby_text_objects[0]["x1"]
     words_list_grouping = [nearby_text_objects[0]]
-    # for i in range(1, len(nearby_text_objects)):
 
     for i in range(1, len(nearby_text_objects)):
         if nearby_text_objects[i]["x0"] - nearest_x1 < expected_gap:
-            # print("NEAREST X1", nearest_x1)
-            # print(nearby_text_objects[i]["x0"])
-            # print("gap is", nearby_text_objects[i]["x0"] - nearest_x1)
             words_list_grouping.append(nearby_text_objects[i])
             nearest_x1 = nearby_text_objects[i]["x1"]
         else:
@@ -63,7 +58,6 @@ def group_adjacent_text(text_objects, expected_gap=3):
     )  # The last grouping doesnt get appended and its required in both cases above so we append here
 
     output_text = [combine_text_objects(group) for group in grouped_text]
-    # print(grouped_headers)
     return output_text
 
 
@@ -82,7 +76,6 @@ def is_valid_date(date_string):
         if info:
             return "Valid"
         else:
-            # print("Incomplete date")
             return "Incomplete"
     else:
         return "Invalid"
