@@ -21,8 +21,8 @@ class Parser:
 
     def _get_words(self):
         words_list = self.pdf_object.extract_words()
-        for index in range(len(words_list)):
-            words_list[index]["index"] = index
+        for i, word in enumerate(words_list):
+            word["index"] = i
 
         self.words_list = words_list
 
@@ -74,16 +74,16 @@ class Parser:
             horizontal_gaps.append(header_list[x + 1]["x0"] - header_list[x]["x1"])
 
         vertical_gaps = []
-        for x in range(len(header_list)):
-            vertical_gaps.append(header_list[x]["bottom"])
+        for _, header in enumerate(header_list):
+            vertical_gaps.append(header["bottom"])
 
         return [30, 30]
 
     def _find_date_header(self):
         words_list = self.words_list
-        for i in range(len(words_list)):
-            if "date" in words_list[i]["text"].lower():
-                potential_date = words_list[i]
+        for _, word in enumerate(words_list):
+            if "date" in word["text"].lower():
+                potential_date = word
 
                 if self._is_table_date(potential_date):
                     table_date = potential_date
