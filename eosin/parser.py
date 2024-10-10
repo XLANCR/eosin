@@ -6,12 +6,7 @@ from eosin.utils import combine_text_objects, group_adjacent_text, is_valid_date
 class Parser:
     def __init__(self, statement):
         self.statement = statement
-        self.pdf_object = None
-        self.words_list = None
         self.headers = []
-        self.table_date = None
-        self.date_column_dimensions = None
-        self.date_rows = None
         self.data = None
 
     def parse(self):
