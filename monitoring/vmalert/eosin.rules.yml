@@ -1,0 +1,43 @@
+groups:
+  - name: eosin-api
+    interval: 30s
+    rules:
+      - alert: EosinTargetDown
+        expr: probe_success{job="eosin-blackbox-health"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: eosin-bank-parser
+        annotations:
+          summary: "Eosin health endpoint probe is failing"
+          description: "The external /health probe for the Eosin parser has been failing for at least 2 minutes."
+
+      - alert: EosinMetricsUnavailable
+        expr: probe_success{job="eosin-blackbox-metrics"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: eosin-bank-parser
+        annotations:
+          summary: "Eosin metrics endpoint probe is failing"
+          description: "The external /metrics endpoint has not been scrapeable for at least 5 minutes."
+
+      - alert: EosinOcrQueueBacklog
+        expr: histogram_quantile(0.95, sum by (le) (rate(eosin_ocr_queue_wait_seconds_bucket{aggregation="max"}[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+          service: eosin-bank-parser
+        annotations:
+          summary: "OCR queue backlog is high"
+          description: "The p95 OCR queue wait has been above 30 seconds for 10 minutes."
+
+      - alert: EosinGpuUnderutilizedDuringLoad
+        expr: avg_over_time(eosin_gpu_utilization_ratio[15m]) < 0.55 and sum(rate(eosin_parse_requests_total{status="success"}[15m])) > 0.01
+        for: 15m
+        labels:
+          severity: info
+          service: eosin-bank-parser
+        annotations:
+          summary: "GPU utilization is low while requests are being served"
+          description: "Average GPU utilization has remained below 55% over 15 minutes while the parser is handling traffic."

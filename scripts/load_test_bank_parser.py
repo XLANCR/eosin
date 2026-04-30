@@ -135,9 +135,15 @@ def safe_git_value(args: list[str]) -> str | None:
 
 def make_results_dir(output_root: Path) -> Path:
     timestamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
-    results_dir = output_root / timestamp
-    results_dir.mkdir(parents=True, exist_ok=False)
-    return results_dir
+    for attempt in range(1000):
+        suffix = "" if attempt == 0 else f"-{attempt:03d}"
+        results_dir = output_root / f"{timestamp}{suffix}"
+        try:
+            results_dir.mkdir(parents=True, exist_ok=False)
+            return results_dir
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"Unable to allocate unique results directory under {output_root}")
 
 
 def safe_artifact_stem(planned: PlannedRequest) -> str:

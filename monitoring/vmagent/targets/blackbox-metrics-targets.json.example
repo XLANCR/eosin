@@ -1,0 +1,9 @@
+[
+  {
+    "targets": ["https://<workspace>--bank-parser.modal.run/metrics"],
+    "labels": {
+      "service": "eosin-bank-parser",
+      "probe": "metrics"
+    }
+  }
+]

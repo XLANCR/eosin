@@ -1,0 +1,68 @@
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: eosin_victoriametrics
+    restart: unless-stopped
+    command:
+      - "--storageDataPath=/victoria-metrics-data"
+      - "--retentionPeriod=90d"
+      - "--httpListenAddr=:8428"
+    ports:
+      - "8428:8428"
+    volumes:
+      - vm_data:/victoria-metrics-data
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: eosin_alertmanager
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
+  vmalert:
+    image: victoriametrics/vmalert:latest
+    container_name: eosin_vmalert
+    restart: unless-stopped
+    depends_on:
+      - victoriametrics
+      - alertmanager
+    command:
+      - "--datasource.url=http://victoriametrics:8428"
+      - "--remoteRead.url=http://victoriametrics:8428"
+      - "--remoteWrite.url=http://victoriametrics:8428"
+      - "--notifier.url=http://alertmanager:9093"
+      - "--rule=/etc/vmalert/*.yml"
+      - "--httpListenAddr=:8880"
+    ports:
+      - "8880:8880"
+    volumes:
+      - ./vmalert:/etc/vmalert:ro
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: eosin_grafana
+    restart: unless-stopped
+    depends_on:
+      - victoriametrics
+      - alertmanager
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  vm_data:
+  grafana_data:
+  alertmanager_data:

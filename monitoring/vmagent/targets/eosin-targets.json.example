@@ -1,0 +1,10 @@
+[
+  {
+    "targets": ["https://<workspace>--bank-parser.modal.run"],
+    "labels": {
+      "service": "eosin-bank-parser",
+      "environment": "modal",
+      "mode": "pull"
+    }
+  }
+]

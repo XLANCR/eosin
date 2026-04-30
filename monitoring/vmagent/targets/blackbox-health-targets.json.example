@@ -1,0 +1,9 @@
+[
+  {
+    "targets": ["https://<workspace>--bank-parser.modal.run/health"],
+    "labels": {
+      "service": "eosin-bank-parser",
+      "probe": "health"
+    }
+  }
+]

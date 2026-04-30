@@ -225,3 +225,5 @@ uv.lock
 /tmp/
 /outputs/
 /debug-images/
+/test_pdfs
+/docs 

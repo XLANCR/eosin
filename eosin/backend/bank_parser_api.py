@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
 import eosin.backend.eosin_pipeline as impl
 from eosin.backend.bank_parser_service import BankParserService
+from eosin.backend.metrics import get_metrics_manager
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -37,6 +40,8 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
     app = FastAPI()
     app.state.bank_parser_service = service
     app.state.bank_parser_service_lock = threading.Lock()
+    app.state.metrics_manager = get_metrics_manager()
+    app.state.metrics_manager.start_background_samplers()
     default_config_path = Path(__file__).resolve().parent / "config.yaml"
 
     def get_service() -> BankParserService:
@@ -59,6 +64,12 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
                 layout_max_concurrency=_optional_env_int("BANK_PARSER_LAYOUT_MAX_CONCURRENCY"),
                 ocr_pipeline_workers=_optional_env_int("BANK_PARSER_OCR_PIPELINE_WORKERS"),
                 ocr_pipeline_queue_size=_optional_env_int("BANK_PARSER_OCR_PIPELINE_QUEUE_SIZE"),
+                ocr_backend_mode=os.getenv("BANK_PARSER_OCR_BACKEND_MODE"),
+                ocr_batch_drain_max_batch_size=_optional_env_int("BANK_PARSER_OCR_BATCH_DRAIN_MAX_BATCH_SIZE"),
+                ocr_batch_drain_max_wait_seconds=_env_float(
+                    "BANK_PARSER_OCR_BATCH_DRAIN_MAX_WAIT_SECONDS",
+                    1.0,
+                ),
                 backend_startup_timeout=_env_float("BANK_PARSER_BACKEND_STARTUP_TIMEOUT", 180.0),
                 backend_retry_interval=_env_float("BANK_PARSER_BACKEND_RETRY_INTERVAL", 5.0),
             )
@@ -72,18 +83,34 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
 
         pdf_bytes = await file.read()
+        metrics_manager = app.state.metrics_manager
+        metrics_manager.track_request_started(len(pdf_bytes))
+        started_at = time.perf_counter()
 
         try:
             result = await run_in_threadpool(
                 lambda: get_service().parse_pdf_bytes(filename, pdf_bytes).to_payload()
             )
+            metrics_manager.track_request_success(result)
             return result
         except TimeoutError as exc:
+            metrics_manager.track_request_failure("timeout")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception:
+            metrics_manager.track_request_failure("exception")
+            raise
+        finally:
+            metrics_manager.track_request_finished(time.perf_counter() - started_at)
+            metrics_manager.schedule_push()
 
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics():
+        rendered = app.state.metrics_manager.render_metrics()
+        return Response(content=rendered.payload, media_type=rendered.media_type)
 
     return app
 

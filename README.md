@@ -8,7 +8,7 @@ Standalone GPU backend for GLM-OCR bank-statement parsing. The primary deploymen
 - `eosin/backend/bank_parser_api.py`: FastAPI routes for parsing and health checks.
 - `eosin/backend/bank_parser_service.py`: parser lifecycle wrapper.
 - `eosin/backend/eosin_pipeline.py`: PDF preprocessing, layout detection, table stitching, OCR fanout, and result shaping.
-- `eosin/backend/ocr_pipeline.py`: shared OCR work queue that keeps vLLM fed after each PDF finishes preprocessing.
+- `eosin/backend/ocr_pipeline.py`: OCR execution backends for document-level HTTP mode and batch-drain throughput mode.
 - `scripts/load_test_bank_parser.py`: concurrent PDF load tester with JSONL, CSV, and summary reports.
 
 ## Setup
@@ -50,14 +50,20 @@ Check the deployed health endpoint:
 curl -sS --max-time 180 "$EOSIN_PARSER_BASE_URL/health"
 ```
 
+Check the merged parser plus vLLM metrics endpoint:
+
+```bash
+curl -sS --max-time 180 "$EOSIN_PARSER_BASE_URL/metrics"
+```
+
 The default production shape in `.env.example` is:
 
 - GPU: `A100-80GB`
 - CPU: `12`
 - Memory: `40960` MiB
-- Modal max containers: `3`
-- Modal concurrent inputs per container: `32`
-- Idle scaledown window: `300` seconds
+- Modal max containers: `1`
+- Modal concurrent inputs per container: `128`
+- Idle scaledown window: `180` seconds
 - vLLM model: `zai-org/GLM-OCR`
 - vLLM max model length: `22480`
 - vLLM max sequences: `192`
@@ -66,6 +72,19 @@ The default production shape in `.env.example` is:
 - vLLM speculative config: `{"method": "mtp", "num_speculative_tokens": 1}`
 
 Modal uses `@modal.concurrent(max_inputs=..., target_inputs=...)`; older `allow_concurrent_inputs` examples are not used by the current SDK.
+
+## Secrets
+
+This repo intentionally does not commit secrets.
+
+Create the Modal secrets before deploy:
+
+```bash
+modal secret create eosin-tailscale TAILSCALE_AUTHKEY="tskey-auth-..."
+modal secret create eosin-metrics-push BANK_PARSER_METRICS_PUSH_AUTH_VALUE="<shared-ingest-token>"
+```
+
+The Tailscale auth key should be reusable and ephemeral. If you exposed one in chat or source control, rotate it before deploy.
 
 ## Caller Integration
 
@@ -76,6 +95,19 @@ export EOSIN_PARSER_BASE_URL="https://<workspace>--bank-parser.modal.run"
 ```
 
 The parser accepts `POST /parse/bank-statement` with multipart form field `file`. Authentication is intentionally not enforced yet; add it before exposing the endpoint beyond trusted callers.
+
+## OCR Modes
+
+The parser now supports two internal OCR execution modes while keeping the same public API:
+
+- `document_http`
+  sends one OCR request per PDF after preprocessing completes for that PDF
+- `batch_document`
+  holds ready PDFs briefly, then flushes multiple document OCR jobs together so vLLM sees denser concurrent work
+
+Current throughput default: `batch_document`
+
+Use `document_http` as the control configuration. Use `batch_document` plus larger `BANK_PARSER_OCR_BATCH_DRAIN_MAX_BATCH_SIZE` values when you want to push throughput harder on a single container.
 
 ## Load Testing
 
@@ -114,6 +146,8 @@ Reports are written to `load-test-results/<timestamp>/` and include:
 - PDF counts and uploaded byte counts
 - server-side parser timings
 - OCR queue wait and vLLM request timing summaries
+- raw server responses
+- markdown exports of parsed DataFrames
 
 `load-test-results/` is ignored so previous benchmark logs stay local.
 
@@ -135,10 +169,21 @@ curl -sS http://localhost:8090/health
 
 - Each PDF completes preprocessing atomically before OCR starts for that PDF.
 - Layout detection is intentionally bounded to one concurrent layout job.
-- OCR work is queued after preprocessing and vLLM handles batching/concurrency.
+- OCR work is now done per PDF, not per page, in both document backends.
+- `batch_document` can wait up to `BANK_PARSER_OCR_BATCH_DRAIN_MAX_WAIT_SECONDS` before flushing ready PDFs together.
+- The current default drain batch size is `64`; practical sweep points are `32`, `64`, `96`, and `128`.
 - Hugging Face cache is persisted in the Modal volume `eosin-hf-cache`.
-- `BANK_PARSER_ENABLE_OCR_BATCHING=false` because batching is delegated to vLLM.
+- vLLM compile/runtime caches are persisted in the Modal volume `eosin-vllm-cache`.
+- pull-based monitoring is intentionally disabled for the Modal worker.
 
-## Observability TODO
+## Monitoring
 
-Add production telemetry before long-running production load tests. The next useful layer is OpenTelemetry or Prometheus-compatible metrics for parser stages, vLLM queue depth, KV-cache usage, multimodal timing, GPU utilization, and per-container admission pressure, with dashboards in Grafana or an equivalent metrics backend.
+The repo now includes a local-first metrics stack under [monitoring/README.md](/home/nol/Documents/work/eosin/monitoring/README.md).
+
+Start it with:
+
+```bash
+docker compose -f monitoring/docker-compose.metrics.yml up -d
+```
+
+The worker pushes metrics to VictoriaMetrics during real request handling. Do not scrape the Modal worker endpoint from Prometheus, VictoriaMetrics, or blackbox probes. That keeps the serverless container warm and creates unnecessary cost.

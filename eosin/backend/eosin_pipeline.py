@@ -38,6 +38,9 @@ ENABLE_OCR_BATCHING = False
 OCR_BATCH_SIZE = 25
 OCR_PIPELINE_WORKERS = None
 OCR_PIPELINE_QUEUE_SIZE = 128
+OCR_BACKEND_MODE = "document_http"
+OCR_BATCH_DRAIN_MAX_BATCH_SIZE = 8
+OCR_BATCH_DRAIN_MAX_WAIT_SECONDS = 1.0
 PDF_RENDER_DPI_OVERRIDE = None
 PDF_RENDER_DPI_AUTO = False
 PDF_RENDER_TARGET_LONG_SIDE_PX = 2600
@@ -62,7 +65,7 @@ from glmocr.layout import PPDocLayoutDetector
 from glmocr.ocr_client import OCRClient
 from glmocr.utils.image_utils import crop_image_region, pdf_to_images_pil
 
-from eosin.backend.ocr_pipeline import OCRPipelineDispatcher, OCRTaskResult
+from eosin.backend.ocr_pipeline import OCRPipelineDispatcher, DocumentOCRTaskResult
 
 
 # ---------------------------------------------------------------------------
@@ -531,11 +534,15 @@ class BankStatementParser:
         )
         self.ocr_pipeline_workers = self._resolve_ocr_pipeline_workers()
         self.ocr_pipeline_queue_size = self._resolve_ocr_pipeline_queue_size()
+        self.ocr_backend_mode = self._resolve_ocr_backend_mode()
         self.ocr_dispatcher = OCRPipelineDispatcher(
             self.page_loader,
             self.ocr_client,
             max_workers=self.ocr_pipeline_workers,
             queue_size=self.ocr_pipeline_queue_size,
+            backend_mode=self.ocr_backend_mode,
+            batch_drain_max_batch_size=self._resolve_ocr_batch_drain_max_batch_size(),
+            batch_drain_max_wait_seconds=self._resolve_ocr_batch_drain_max_wait_seconds(),
         )
 
         if self.ocr_connection_pool_size < self.ocr_max_workers:
@@ -546,7 +553,8 @@ class BankStatementParser:
             )
         print(
             "  OCR Pipeline ready "
-            f"({self.ocr_pipeline_workers} worker(s), queue size {self.ocr_pipeline_queue_size})."
+            f"({self.ocr_pipeline_workers} worker(s), queue size {self.ocr_pipeline_queue_size}, "
+            f"backend {self.ocr_backend_mode})."
         )
 
     def close(self):
@@ -590,6 +598,21 @@ class BankStatementParser:
             self._resolve_ocr_pipeline_workers(),
             int(configured),
         )
+
+    @staticmethod
+    def _resolve_ocr_backend_mode() -> str:
+        configured = str(OCR_BACKEND_MODE or "document_http").strip().lower()
+        if configured not in {"page_http", "document_http", "batch_document"}:
+            return "document_http"
+        return configured
+
+    @staticmethod
+    def _resolve_ocr_batch_drain_max_batch_size() -> int:
+        return max(1, int(OCR_BATCH_DRAIN_MAX_BATCH_SIZE))
+
+    @staticmethod
+    def _resolve_ocr_batch_drain_max_wait_seconds() -> float:
+        return max(0.001, float(OCR_BATCH_DRAIN_MAX_WAIT_SECONDS))
 
     def _geometry_driven_pdf_dpi(
         self,
@@ -1231,11 +1254,12 @@ class BankStatementParser:
         return bool(probe_results) and all(result for _, result in probe_results)
 
     def _ocr_text(self, image: Image.Image) -> str:
-        future = self.ocr_dispatcher.submit(image, task_type="text")
+        future = self.ocr_dispatcher.submit(image, page_index=0, task_type="text")
         result = future.result()
-        if not result.content:
+        content = result.contents[0] if result.contents else None
+        if not content:
             return ""
-        return str(result.content).strip()
+        return str(content).strip()
 
     @staticmethod
     def _header_text_tokens(text: str) -> List[str]:
@@ -1353,9 +1377,6 @@ class BankStatementParser:
         )
         return image.resize(new_size, Image.Resampling.LANCZOS)
 
-    def _submit_ocr_task(self, image: Image.Image, *, task_type: str) -> Future[OCRTaskResult]:
-        return self.ocr_dispatcher.submit(image, task_type=task_type)
-
     def _ocr_tables_parallel(
         self,
         stitched_images: List[Tuple[int, Image.Image]],
@@ -1370,7 +1391,7 @@ class BankStatementParser:
         )
 
         results: List[Tuple[int, Optional[str]]] = []
-        ocr_task_results: List[OCRTaskResult] = []
+        ocr_task_results: List[DocumentOCRTaskResult] = []
 
         for batch_index, batch in enumerate(batches, start=1):
             batch_workers = self._resolve_ocr_batch_workers(len(batch))
@@ -1386,19 +1407,36 @@ class BankStatementParser:
                     f"{batch_workers} worker(s)"
                 )
 
-            pending = {
-                self._submit_ocr_task(img, task_type="table"): page_idx
-                for page_idx, img in batch
-            }
+            if self.ocr_backend_mode == "page_http":
+                pending = {
+                    self.ocr_dispatcher.submit(
+                        img,
+                        page_index=page_idx,
+                        task_type="table",
+                    ): (page_idx,)
+                    for page_idx, img in batch
+                }
+            else:
+                page_indices = [page_idx for page_idx, _ in batch]
+                images = [img for _, img in batch]
+                pending = {
+                    self.ocr_dispatcher.submit_document(
+                        images,
+                        page_indices=page_indices,
+                        task_type="table",
+                    ): tuple(page_indices)
+                }
             for future in as_completed(pending):
-                page_idx = pending[future]
+                page_indices = pending[future]
                 try:
                     task_result = future.result()
                     ocr_task_results.append(task_result)
-                    results.append((page_idx, task_result.content))
+                    for page_idx, content in zip(page_indices, task_result.contents):
+                        results.append((page_idx, content))
                 except Exception as exc:
-                    print(f"        ✗ Page {page_idx + 1}: OCR failed ({exc})")
-                    results.append((page_idx, None))
+                    page_range = ", ".join(str(page_idx + 1) for page_idx in page_indices)
+                    print(f"        ✗ Page(s) {page_range}: OCR failed ({exc})")
+                    results.extend((page_idx, None) for page_idx in page_indices)
 
         results.sort(key=lambda x: x[0])
         return results, self._summarize_ocr_metrics(ocr_task_results)
@@ -1410,8 +1448,7 @@ class BankStatementParser:
             max(1, self.ocr_connection_pool_size),
         )
 
-    @staticmethod
-    def _empty_ocr_metrics() -> Dict[str, float]:
+    def _empty_ocr_metrics(self) -> Dict[str, float]:
         return {
             "task_count": 0,
             "success_count": 0,
@@ -1425,9 +1462,12 @@ class BankStatementParser:
             "total_mean": 0.0,
             "total_max": 0.0,
             "max_queue_size_at_submit": 0.0,
+            "batch_size_mean": 0.0,
+            "batch_size_max": 0.0,
+            "backend_mode": self.ocr_backend_mode,
         }
 
-    def _summarize_ocr_metrics(self, task_results: List[OCRTaskResult]) -> Dict[str, float]:
+    def _summarize_ocr_metrics(self, task_results: List[DocumentOCRTaskResult]) -> Dict[str, float]:
         if not task_results:
             return self._empty_ocr_metrics()
 
@@ -1437,6 +1477,7 @@ class BankStatementParser:
         total_times = [item.total_seconds for item in task_results]
         status_codes = [item.status_code for item in task_results]
         submitted_queue_sizes = [item.queue_size_at_submit for item in task_results]
+        batch_sizes = [item.batch_size for item in task_results]
 
         return {
             "task_count": float(len(task_results)),
@@ -1451,6 +1492,9 @@ class BankStatementParser:
             "total_mean": round(sum(total_times) / len(total_times), 6),
             "total_max": round(max(total_times), 6),
             "max_queue_size_at_submit": float(max(submitted_queue_sizes)),
+            "batch_size_mean": round(sum(batch_sizes) / len(batch_sizes), 6),
+            "batch_size_max": float(max(batch_sizes)),
+            "backend_mode": self.ocr_backend_mode,
         }
 
     @staticmethod

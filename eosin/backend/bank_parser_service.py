@@ -51,6 +51,9 @@ class BankParserService:
         layout_max_concurrency: Optional[int] = None,
         ocr_pipeline_workers: Optional[int] = None,
         ocr_pipeline_queue_size: Optional[int] = None,
+        ocr_backend_mode: Optional[str] = None,
+        ocr_batch_drain_max_batch_size: Optional[int] = None,
+        ocr_batch_drain_max_wait_seconds: Optional[float] = None,
         backend_startup_timeout: float = 180.0,
         backend_retry_interval: float = 5.0,
     ):
@@ -73,6 +76,12 @@ class BankParserService:
             self._settings["OCR_PIPELINE_WORKERS"] = ocr_pipeline_workers
         if ocr_pipeline_queue_size is not None:
             self._settings["OCR_PIPELINE_QUEUE_SIZE"] = ocr_pipeline_queue_size
+        if ocr_backend_mode is not None:
+            self._settings["OCR_BACKEND_MODE"] = ocr_backend_mode
+        if ocr_batch_drain_max_batch_size is not None:
+            self._settings["OCR_BATCH_DRAIN_MAX_BATCH_SIZE"] = ocr_batch_drain_max_batch_size
+        if ocr_batch_drain_max_wait_seconds is not None:
+            self._settings["OCR_BATCH_DRAIN_MAX_WAIT_SECONDS"] = ocr_batch_drain_max_wait_seconds
 
         self._backend_startup_timeout = backend_startup_timeout
         self._backend_retry_interval = backend_retry_interval
