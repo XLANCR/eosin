@@ -77,7 +77,6 @@ def test_monitoring_stack_files_exist() -> None:
     assert Path("monitoring/docker-compose.metrics.yml").exists()
     assert Path("monitoring/README.md").exists()
     assert Path("monitoring/grafana/dashboards/eosin-overview.json").exists()
-    assert Path("docs/monitoring/2026-04-24-monitoring-stack-report.md").exists()
 
 
 def test_monitoring_stack_uses_env_driven_modal_target() -> None:

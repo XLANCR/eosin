@@ -109,6 +109,17 @@ Current throughput default: `batch_document`
 
 Use `document_http` as the control configuration. Use `batch_document` plus larger `BANK_PARSER_OCR_BATCH_DRAIN_MAX_BATCH_SIZE` values when you want to push throughput harder on a single container.
 
+Layout fallback is controlled with `BANK_PARSER_LAYOUT_MODE`:
+
+- `required`
+  fail if the PP-DocLayout detector cannot initialize
+- `auto`
+  fall back to the non-layout extraction path when layout initialization fails
+- `disabled`
+  always use the non-layout extraction path
+
+For Modal, the default is `auto` so a transient layout-detector issue does not take the whole worker out of service.
+
 ## Load Testing
 
 Put local PDFs under `bank statements/` using any nested folder layout. That directory is ignored and must not be committed.

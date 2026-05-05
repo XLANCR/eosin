@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 APP_NAME = os.getenv("EOSIN_MODAL_APP_NAME", "eosin-glm-ocr")
+WEB_LABEL = os.getenv("EOSIN_MODAL_WEB_LABEL", "bank-parser")
 GPU_TYPE = os.getenv("EOSIN_MODAL_GPU", "A100-80GB")
 MAX_CONTAINERS = int(os.getenv("EOSIN_MODAL_MAX_CONTAINERS", "1"))
 MAX_INPUTS = int(os.getenv("EOSIN_MODAL_MAX_INPUTS", "128"))
@@ -88,6 +89,7 @@ image = (
             "BANK_PARSER_SAVE_DEBUG_IMAGES": "false",
             "BANK_PARSER_PARSE_TESTING": "false",
             "BANK_PARSER_ENABLE_OCR_BATCHING": "false",
+            "BANK_PARSER_LAYOUT_MODE": os.getenv("BANK_PARSER_LAYOUT_MODE", "auto"),
             "BANK_PARSER_LAYOUT_MAX_CONCURRENCY": "1",
             "BANK_PARSER_OCR_PIPELINE_WORKERS": str(OCR_PIPELINE_WORKERS),
             "BANK_PARSER_OCR_PIPELINE_QUEUE_SIZE": str(OCR_PIPELINE_QUEUE_SIZE),
@@ -267,6 +269,6 @@ class BankParserModalApp:
         _terminate_process(getattr(self, "vllm_process", None))
         _terminate_process(getattr(self, "tailscale_process", None))
 
-    @modal.asgi_app(label="bank-parser")
+    @modal.asgi_app(label=WEB_LABEL)
     def web(self):
         return self.web_app

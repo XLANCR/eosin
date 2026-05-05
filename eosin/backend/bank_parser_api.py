@@ -56,6 +56,7 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
 
             created = BankParserService(
                 config_path=os.getenv("BANK_PARSER_CONFIG", str(default_config_path)),
+                layout_mode=os.getenv("BANK_PARSER_LAYOUT_MODE"),
                 save_debug_images=_env_flag("BANK_PARSER_SAVE_DEBUG_IMAGES", impl.SAVE_DEBUG_IMAGES),
                 parse_testing=_env_flag("BANK_PARSER_PARSE_TESTING", impl.PARSE_TESTING),
                 enable_ocr_batching=_env_flag("BANK_PARSER_ENABLE_OCR_BATCHING", impl.ENABLE_OCR_BATCHING),

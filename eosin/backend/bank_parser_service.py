@@ -43,6 +43,7 @@ class BankParserService:
         self,
         config_path: str | None = None,
         *,
+        layout_mode: Optional[str] = None,
         save_debug_images: Optional[bool] = None,
         parse_testing: Optional[bool] = None,
         enable_ocr_batching: Optional[bool] = None,
@@ -59,6 +60,7 @@ class BankParserService:
     ):
         default_config_path = Path(__file__).resolve().parent / "config.yaml"
         self.config_path = str(config_path or default_config_path)
+        self.layout_mode = layout_mode
         self._settings = {
             "ENABLE_OCR_HEADER_FALLBACK": False,
         }
@@ -99,7 +101,10 @@ class BankParserService:
         deadline = time.monotonic() + self._backend_startup_timeout
         while True:
             try:
-                return impl.BankStatementParser(self.config_path)
+                return impl.BankStatementParser(
+                    self.config_path,
+                    layout_mode=self.layout_mode,
+                )
             except (ConnectionError, TimeoutError) as exc:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(

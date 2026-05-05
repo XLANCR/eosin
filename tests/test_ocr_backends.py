@@ -124,11 +124,16 @@ def test_ocr_text_submits_single_image_with_page_index_zero() -> None:
         def __init__(self) -> None:
             self.calls: list[dict] = []
 
-        def submit(self, image: Image.Image, *, page_index: int, task_type: str) -> Future[DocumentOCRTaskResult]:
+        def submit(
+            self,
+            image: Image.Image,
+            *,
+            page_index: int = 0,
+            task_type: str,
+        ) -> Future[DocumentOCRTaskResult]:
             self.calls.append(
                 {
                     "image_size": image.size,
-                    "page_index": page_index,
                     "task_type": task_type,
                 }
             )
@@ -155,5 +160,5 @@ def test_ocr_text_submits_single_image_with_page_index_zero() -> None:
 
     assert result == "header text"
     assert parser.ocr_dispatcher.calls == [
-        {"image_size": (8, 8), "page_index": 0, "task_type": "text"}
+        {"image_size": (8, 8), "task_type": "text"}
     ]

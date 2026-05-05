@@ -38,9 +38,6 @@ ENABLE_OCR_BATCHING = False
 OCR_BATCH_SIZE = 25
 OCR_PIPELINE_WORKERS = None
 OCR_PIPELINE_QUEUE_SIZE = 128
-OCR_BACKEND_MODE = "document_http"
-OCR_BATCH_DRAIN_MAX_BATCH_SIZE = 8
-OCR_BATCH_DRAIN_MAX_WAIT_SECONDS = 1.0
 PDF_RENDER_DPI_OVERRIDE = None
 PDF_RENDER_DPI_AUTO = False
 PDF_RENDER_TARGET_LONG_SIDE_PX = 2600
@@ -56,6 +53,14 @@ HEADER_MATCH_VERTICAL_TOLERANCE_PX = 8
 HEADER_MATCH_MAX_NORMED_SQDIFF = 0.12
 HEADER_TEXT_MIN_SHARED_TOKENS = 4
 HEADER_TEXT_MIN_OVERLAP_RATIO = 0.6
+LAYOUT_MODE_REQUIRED = "required"
+LAYOUT_MODE_DISABLED = "disabled"
+LAYOUT_MODE_AUTO = "auto"
+LAYOUT_MODE_CHOICES = {
+    LAYOUT_MODE_REQUIRED,
+    LAYOUT_MODE_DISABLED,
+    LAYOUT_MODE_AUTO,
+}
 # ---------------------
 
 # SDK utilities
@@ -65,7 +70,7 @@ from glmocr.layout import PPDocLayoutDetector
 from glmocr.ocr_client import OCRClient
 from glmocr.utils.image_utils import crop_image_region, pdf_to_images_pil
 
-from eosin.backend.ocr_pipeline import OCRPipelineDispatcher, DocumentOCRTaskResult
+from eosin.backend.ocr_pipeline import OCRPipelineDispatcher, OCRTaskResult
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +226,33 @@ BANK_HEADER_REFERENCE_TERMS = {
     "chq no",
     "chq. no",
 }
+TRANSACTION_HEADER_TEXT_TERMS = BANK_HEADER_TEXT_TERMS | BANK_HEADER_REFERENCE_TERMS
+SUMMARY_TABLE_REJECTION_PHRASES = (
+    "deposit accounts",
+    "account holder",
+    "account holder name",
+    "customer name",
+    "customer id",
+    "account summary",
+    "account details",
+    "account information",
+    "branch address",
+    "statement summary",
+)
+SUMMARY_TABLE_REJECTION_HEADER_GROUPS = (
+    {"account type", "account number", "current balance"},
+    {"account name", "account number", "current balance"},
+)
+NON_TRANSACTION_ROW_MARKERS = (
+    "legends used in the statement",
+    "transaction total",
+    "closing balance",
+    "opening balance",
+    "iconn",
+    "auto sweep",
+    "rev sweep",
+    "sweep trf",
+)
 BANK_HEADER_TERM_PATTERNS = tuple(
     re.compile(rf"(?<![a-z0-9]){re.escape(term.lower())}(?![a-z0-9])", re.IGNORECASE)
     for term in sorted(BANK_HEADER_TERMS, key=len, reverse=True)
@@ -230,7 +262,7 @@ DATE_ATOM_RE = (
     r"(?:"
     r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"
     r"|"
-    r"\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}"
+    r"\d{1,2}\s+[A-Za-z]{3,9}\s+[']?\d{2,4}"
     r"|"
     r"\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4}"
     r")"
@@ -374,6 +406,84 @@ def headers_are_valid(headers: List[str]) -> bool:
     return (date_like + numeric_like) <= 1
 
 
+def resolve_layout_mode(layout_mode: Optional[str]) -> str:
+    raw_mode = (layout_mode or os.getenv("BANK_PARSER_LAYOUT_MODE", LAYOUT_MODE_REQUIRED)).strip().lower()
+    if raw_mode not in LAYOUT_MODE_CHOICES:
+        valid = ", ".join(sorted(LAYOUT_MODE_CHOICES))
+        raise ValueError(f"invalid BANK_PARSER_LAYOUT_MODE={raw_mode!r}; expected one of: {valid}")
+    return raw_mode
+
+
+def _normalize_header_text(value: object) -> str:
+    return " ".join(str(value).strip().lower().split())
+
+
+def _header_contains_term(header: str, terms: Sequence[str]) -> bool:
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(term.lower())}(?![a-z0-9])", header)
+        for term in terms
+    )
+
+
+def _has_transaction_header_anchor(headers: Sequence[str]) -> bool:
+    normalized_headers = [_normalize_header_text(header) for header in headers if _normalize_header_text(header)]
+    if not normalized_headers:
+        return False
+
+    date_hits = sum(1 for header in normalized_headers if _header_contains_term(header, BANK_HEADER_DATE_TERMS))
+    text_hits = sum(1 for header in normalized_headers if _header_contains_term(header, TRANSACTION_HEADER_TEXT_TERMS))
+    money_hits = sum(1 for header in normalized_headers if _header_contains_term(header, BANK_HEADER_MONEY_TERMS))
+    return date_hits >= 1 and text_hits >= 1 and money_hits >= 2
+
+
+def _row_text(values: Sequence[object]) -> str:
+    return " ".join(str(value).strip().lower() for value in values if str(value).strip())
+
+
+def _is_non_transaction_text(text: str) -> bool:
+    return bool(text) and any(marker in text for marker in NON_TRANSACTION_ROW_MARKERS)
+
+
+def _table_looks_like_summary_or_profile(headers: Sequence[str], df: pd.DataFrame) -> bool:
+    normalized_headers = [_normalize_header_text(header) for header in headers if _normalize_header_text(header)]
+    header_text = " | ".join(normalized_headers)
+
+    if any(phrase in header_text for phrase in SUMMARY_TABLE_REJECTION_PHRASES):
+        return True
+
+    if any(group.issubset(set(normalized_headers)) for group in SUMMARY_TABLE_REJECTION_HEADER_GROUPS):
+        return True
+
+    if df.empty:
+        return False
+
+    preview_rows = [
+        _row_text(row.tolist())
+        for _, row in df.head(3).fillna("").astype(str).iterrows()
+    ]
+    preview_text = " | ".join(text for text in preview_rows if text)
+    if any(phrase in preview_text for phrase in SUMMARY_TABLE_REJECTION_PHRASES):
+        return True
+
+    return False
+
+
+def _count_transaction_rows(df: pd.DataFrame) -> int:
+    if df.empty:
+        return 0
+
+    rows_as_strings = df.fillna("").astype(str)
+    transaction_rows = 0
+    for _, row in rows_as_strings.iterrows():
+        row_values = [value.strip() for value in row.tolist()]
+        row_text = _row_text(row_values)
+        if _is_non_transaction_text(row_text):
+            continue
+        if any(is_date_like(value) for value in row_values):
+            transaction_rows += 1
+    return transaction_rows
+
+
 def make_columns_unique(columns: List[str]) -> List[str]:
     counts: Dict[str, int] = {}
     unique_columns: List[str] = []
@@ -493,6 +603,88 @@ def parse_html_table(
     return pd.DataFrame(normalized_rows, columns=make_columns_unique(cols))
 
 
+def _score_table_candidate(
+    df: pd.DataFrame,
+    raw_headers: List[str],
+    expected_headers: Optional[List[str]],
+) -> int:
+    if df.empty:
+        return -1
+
+    score = 0
+    cleaned_headers = [header.strip() for header in raw_headers if header and header.strip()]
+    header_text = " ".join(cleaned_headers).lower()
+    anchor_headers = cleaned_headers or [
+        str(column).strip()
+        for column in df.columns
+        if str(column).strip() and not str(column).startswith("col_")
+    ]
+    if not anchor_headers and expected_headers:
+        anchor_headers = [header.strip() for header in expected_headers if header and header.strip()]
+
+    if cleaned_headers:
+        score += 20
+        score += sum(1 for kw in HEADER_KEYWORDS if kw in header_text) * 10
+
+    if _has_transaction_header_anchor(anchor_headers):
+        score += 140
+    elif cleaned_headers:
+        score -= 60
+
+    if _table_looks_like_summary_or_profile(anchor_headers, df):
+        score -= 220
+
+    date_hits = 0
+    if expected_headers:
+        expected = {header.strip().lower() for header in expected_headers if header.strip()}
+        actual = {str(column).strip().lower() for column in df.columns if str(column).strip()}
+        raw = {header.strip().lower() for header in cleaned_headers}
+        score += len(expected & actual) * 15
+        score += len(expected & raw) * 20
+        if len(df.columns) == len(expected_headers):
+            score += 10
+        if raw and not (expected & raw):
+            score -= 40
+
+    for column in df.columns:
+        values = df[column].fillna("").astype(str).str.strip()
+        date_hits = max(date_hits, int(values.apply(is_date_like).sum()))
+    score += min(date_hits, 10) * 8
+    if expected_headers and date_hits == 0:
+        score -= 20
+
+    non_empty_cells = int(
+        df.fillna("").astype(str).apply(lambda column: column.str.strip().ne("")).sum().sum()
+    )
+    score += min(non_empty_cells, 100)
+    score += min(len(df), 50) * 4
+
+    transaction_rows = _count_transaction_rows(df)
+    score += min(transaction_rows, 20) * 30
+    if transaction_rows == 0:
+        score -= 200
+    return score
+
+
+def select_best_table_candidate(
+    table_htmls: Sequence[str],
+    expected_headers: Optional[List[str]] = None,
+) -> Optional[Tuple[int, str, pd.DataFrame, List[str]]]:
+    best_candidate: Optional[Tuple[int, str, pd.DataFrame, List[str], int]] = None
+
+    for index, table_html in enumerate(table_htmls):
+        raw_headers = extract_headers_from_html(table_html)
+        parsed_df = parse_html_table(table_html, expected_headers=expected_headers)
+        score = _score_table_candidate(parsed_df, raw_headers, expected_headers)
+        if best_candidate is None or score > best_candidate[4]:
+            best_candidate = (index, table_html, parsed_df, raw_headers, score)
+
+    if best_candidate is None or best_candidate[4] < 0:
+        return None
+
+    return best_candidate[:4]
+
+
 # ---------------------------------------------------------------------------
 # BankStatementParser
 # ---------------------------------------------------------------------------
@@ -506,18 +698,16 @@ class BankStatementParser:
     OCR_MAX_IMAGE_SIDE = 1600
     OCR_MAX_IMAGE_PIXELS = 2_200_000
 
-    def __init__(self, config_path: str | None = None):
+    def __init__(self, config_path: str | None = None, *, layout_mode: Optional[str] = None):
         default_config_path = Path(__file__).resolve().parent / "config.yaml"
         self.config_path = str(config_path or default_config_path)
         self.last_run_stats: Dict[str, object] = {}
+        self.layout_mode = resolve_layout_mode(layout_mode)
 
         print("  Loading SDK config...")
         sdk_cfg = sdk_load_config(self.config_path)
 
-        print("  Initializing Layout Detector...")
-        self.layout_detector = PPDocLayoutDetector(sdk_cfg.pipeline.layout)
-        self.layout_detector.start()
-        print("  Layout Detector ready.")
+        self.layout_detector = self._build_layout_detector(sdk_cfg.pipeline.layout)
 
         print("  Initializing PageLoader & OCR Client...")
         self.page_loader = PageLoader(sdk_cfg.pipeline.page_loader)
@@ -534,15 +724,11 @@ class BankStatementParser:
         )
         self.ocr_pipeline_workers = self._resolve_ocr_pipeline_workers()
         self.ocr_pipeline_queue_size = self._resolve_ocr_pipeline_queue_size()
-        self.ocr_backend_mode = self._resolve_ocr_backend_mode()
         self.ocr_dispatcher = OCRPipelineDispatcher(
             self.page_loader,
             self.ocr_client,
             max_workers=self.ocr_pipeline_workers,
             queue_size=self.ocr_pipeline_queue_size,
-            backend_mode=self.ocr_backend_mode,
-            batch_drain_max_batch_size=self._resolve_ocr_batch_drain_max_batch_size(),
-            batch_drain_max_wait_seconds=self._resolve_ocr_batch_drain_max_wait_seconds(),
         )
 
         if self.ocr_connection_pool_size < self.ocr_max_workers:
@@ -553,8 +739,7 @@ class BankStatementParser:
             )
         print(
             "  OCR Pipeline ready "
-            f"({self.ocr_pipeline_workers} worker(s), queue size {self.ocr_pipeline_queue_size}, "
-            f"backend {self.ocr_backend_mode})."
+            f"({self.ocr_pipeline_workers} worker(s), queue size {self.ocr_pipeline_queue_size})."
         )
 
     def close(self):
@@ -563,7 +748,8 @@ class BankStatementParser:
         except Exception:
             pass
         try:
-            self.layout_detector.stop()
+            if self.layout_detector is not None:
+                self.layout_detector.stop()
         except Exception:
             pass
         try:
@@ -599,20 +785,31 @@ class BankStatementParser:
             int(configured),
         )
 
-    @staticmethod
-    def _resolve_ocr_backend_mode() -> str:
-        configured = str(OCR_BACKEND_MODE or "document_http").strip().lower()
-        if configured not in {"page_http", "document_http", "batch_document"}:
-            return "document_http"
-        return configured
+    def _build_layout_detector(self, layout_config: object):
+        print(f"  Initializing Layout Detector (mode={self.layout_mode})...")
+        print(
+            "  Layout backend symbol: "
+            f"value={PPDocLayoutDetector!r}, type={type(PPDocLayoutDetector).__name__}"
+        )
 
-    @staticmethod
-    def _resolve_ocr_batch_drain_max_batch_size() -> int:
-        return max(1, int(OCR_BATCH_DRAIN_MAX_BATCH_SIZE))
+        if self.layout_mode == LAYOUT_MODE_DISABLED:
+            print("  Layout Detector disabled by configuration.")
+            return None
 
-    @staticmethod
-    def _resolve_ocr_batch_drain_max_wait_seconds() -> float:
-        return max(0.001, float(OCR_BATCH_DRAIN_MAX_WAIT_SECONDS))
+        try:
+            if PPDocLayoutDetector is None:
+                raise TypeError("PPDocLayoutDetector import resolved to None")
+            detector = PPDocLayoutDetector(layout_config)
+            if detector is None:
+                raise TypeError("PPDocLayoutDetector(...) returned None")
+            detector.start()
+            print("  Layout Detector ready.")
+            return detector
+        except Exception as exc:
+            if self.layout_mode == LAYOUT_MODE_REQUIRED:
+                raise RuntimeError("failed to initialize layout detector") from exc
+            print(f"  Layout Detector unavailable; continuing with layout disabled: {exc}")
+            return None
 
     def _geometry_driven_pdf_dpi(
         self,
@@ -726,6 +923,9 @@ class BankStatementParser:
         return fallback_index, fallback_height, fallback_image, fallback_text
 
     def _run_layout_detection(self, page_images: List[Image.Image]):
+        if self.layout_detector is None:
+            raise RuntimeError("layout detector is disabled")
+
         original_batch_size = max(1, int(getattr(self.layout_detector, "batch_size", 1)))
         batch_size = original_batch_size
         guard = self.layout_guard if self.layout_guard is not None else nullcontext()
@@ -748,6 +948,128 @@ class BankStatementParser:
                 batch_size = next_batch_size
             else:
                 break
+
+    def _extract_transaction_dataframes(
+        self,
+        all_ocr_results: List[Tuple[int, Optional[str]]],
+        pdf_path: str,
+    ) -> Tuple[List[pd.DataFrame], Optional[List[str]], List[int]]:
+        all_dfs: List[pd.DataFrame] = []
+        expected_headers: Optional[List[str]] = None
+        selected_pages: List[int] = []
+
+        for page_idx, html_content in all_ocr_results:
+            if not html_content:
+                print(f"        Page {page_idx + 1}: No HTML returned")
+                continue
+
+            if SAVE_DEBUG_IMAGES:
+                debug_dir = os.path.join("output", "debug", os.path.splitext(os.path.basename(pdf_path))[0])
+                os.makedirs(debug_dir, exist_ok=True)
+                with open(os.path.join(debug_dir, f"page_{page_idx + 1}_raw.html"), "w") as handle:
+                    handle.write(html_content)
+
+            table_htmls = extract_all_tables_from_response(html_content)
+            if not table_htmls:
+                print(f"        Page {page_idx + 1}: No <table> found in response")
+                continue
+
+            selected_table = select_best_table_candidate(
+                table_htmls,
+                expected_headers=expected_headers,
+            )
+            if selected_table is None:
+                print(f"        Page {page_idx + 1}: No usable table found in response")
+                continue
+
+            table_index, _, df, raw_headers = selected_table
+            selected_pages.append(page_idx)
+            if table_index > 0:
+                print(
+                    f"        Page {page_idx + 1}: selected table "
+                    f"{table_index + 1}/{len(table_htmls)}"
+                )
+
+            if expected_headers is None and raw_headers:
+                expected_headers = raw_headers
+                print(f"        Headers: {expected_headers}")
+                all_dfs = [
+                    self._align_columns_with_headers(existing_df, expected_headers)
+                    for existing_df in all_dfs
+                ]
+
+            df = self._align_columns_with_headers(df, expected_headers or [])
+            if not df.empty:
+                all_dfs.append(df)
+                print(f"        Page {page_idx + 1}: {len(df)} rows")
+
+        return all_dfs, expected_headers, selected_pages
+
+    def _finalize_extracted_tables(
+        self,
+        all_dfs: List[pd.DataFrame],
+        expected_headers: Optional[List[str]],
+    ) -> pd.DataFrame:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined = self._remove_header_rows(combined, expected_headers or [])
+        combined = self._merge_multiline_rows(combined)
+        combined = self._filter_valid_date_rows(combined)
+        return combined.replace(r'^\s*$', np.nan, regex=True).dropna(axis=1, how='all')
+
+    def _parse_pdf_without_layout(
+        self,
+        pdf_path: str,
+        page_images: List[Image.Image],
+        effective_dpi: int,
+        started_at: float,
+        step_timings: Dict[str, float],
+    ) -> pd.DataFrame:
+        print("  [2/4] Layout detection disabled; OCR-ing full pages...")
+        step_started_at = time.time()
+        ocr_images = [
+            (page_idx, self._normalize_ocr_image(page_image))
+            for page_idx, page_image in enumerate(page_images)
+        ]
+        all_ocr_results, ocr_metrics = self._ocr_tables_parallel(ocr_images)
+        step_timings["ocr_pages"] = round(time.time() - step_started_at, 3)
+
+        print("  [3/4] Parsing HTML to DataFrames...")
+        step_started_at = time.time()
+        all_dfs, expected_headers, pages_with_tables = self._extract_transaction_dataframes(
+            all_ocr_results,
+            pdf_path,
+        )
+        if not all_dfs:
+            print("  × No table data extracted")
+            step_timings["parse_html_tables"] = round(time.time() - step_started_at, 3)
+            self.last_run_stats = {
+                "timings": step_timings,
+                "pages_with_tables": [page + 1 for page in pages_with_tables],
+                "page_count": len(page_images),
+                "effective_dpi": effective_dpi,
+                "layout_mode": self.layout_mode,
+                "layout_enabled": False,
+                "ocr_images": len(ocr_images),
+                "ocr_metrics": ocr_metrics,
+            }
+            return pd.DataFrame()
+
+        combined = self._finalize_extracted_tables(all_dfs, expected_headers)
+        step_timings["parse_html_tables"] = round(time.time() - step_started_at, 3)
+        elapsed = time.time() - started_at
+        step_timings["total"] = round(elapsed, 3)
+        self.last_run_stats = {
+            "timings": step_timings,
+            "pages_with_tables": [page + 1 for page in pages_with_tables],
+            "page_count": len(page_images),
+            "effective_dpi": effective_dpi,
+            "layout_mode": self.layout_mode,
+            "layout_enabled": False,
+            "ocr_images": len(ocr_images),
+            "ocr_metrics": ocr_metrics,
+        }
+        print(f"  → Processed {len(combined)} rows in {elapsed:.1f}s")
+        return combined
 
     def parse_pdf(self, pdf_path: str) -> pd.DataFrame:
         """Parse a bank statement PDF into a single DataFrame."""
@@ -781,6 +1103,15 @@ class BankStatementParser:
                 "effective_dpi": effective_dpi,
             }
             return pd.DataFrame()
+
+        if self.layout_detector is None:
+            return self._parse_pdf_without_layout(
+                pdf_path,
+                page_images,
+                effective_dpi,
+                t0,
+                step_timings,
+            )
 
         print("  [2/8] Running layout detection...")
         t_layout = time.time()
@@ -885,72 +1216,37 @@ class BankStatementParser:
 
         print("  [8/8] Parsing HTML to DataFrames...")
         step_started_at = time.time()
-        all_dfs: List[pd.DataFrame] = []
-        expected_headers: Optional[List[str]] = None
-
-        for page_idx, html_content in all_ocr_results:
-            if not html_content:
-                print(f"        Page {page_idx + 1}: No HTML returned")
-                continue
-
-            if SAVE_DEBUG_IMAGES:
-                debug_dir = os.path.join("output", "debug", os.path.splitext(os.path.basename(pdf_path))[0])
-                os.makedirs(debug_dir, exist_ok=True)
-                with open(os.path.join(debug_dir, f"page_{page_idx + 1}_raw.html"), "w") as f:
-                    f.write(html_content)
-
-            table_htmls = extract_all_tables_from_response(html_content)
-            if not table_htmls:
-                print(f"        Page {page_idx + 1}: No <table> found in response")
-                continue
-
-            table_html = table_htmls[0]
-
-            if expected_headers is None:
-                raw_headers = extract_headers_from_html(table_html)
-                if raw_headers:
-                    expected_headers = raw_headers
-                    print(f"        Headers: {expected_headers}")
-                    all_dfs = [
-                        self._align_columns_with_headers(existing_df, expected_headers)
-                        for existing_df in all_dfs
-                    ]
-
-            df = parse_html_table(table_html, expected_headers=expected_headers)
-            if not df.empty:
-                all_dfs.append(df)
-                print(f"        Page {page_idx + 1}: {len(df)} rows")
+        all_dfs, expected_headers, parsed_pages = self._extract_transaction_dataframes(
+            all_ocr_results,
+            pdf_path,
+        )
 
         if not all_dfs:
             print("  ✗ No table data extracted")
             step_timings["parse_html_tables"] = round(time.time() - step_started_at, 3)
             self.last_run_stats = {
                 "timings": step_timings,
-                "pages_with_tables": [p + 1 for p in pages_with_tables],
+                "pages_with_tables": [p + 1 for p in parsed_pages],
                 "page_count": len(page_images),
                 "effective_dpi": effective_dpi,
+                "layout_mode": self.layout_mode,
+                "layout_enabled": True,
                 "ocr_metrics": ocr_metrics,
             }
             return pd.DataFrame()
 
-        combined = pd.concat(all_dfs, ignore_index=True)
-
-        # Remove duplicate header rows that snuck into the data
-        combined = self._remove_header_rows(combined, expected_headers or [])
-        combined = self._merge_multiline_rows(combined)
-        combined = self._filter_valid_date_rows(combined)
-
-        # Drop columns that are completely empty/NaN
-        combined = combined.replace(r'^\s*$', np.nan, regex=True).dropna(axis=1, how='all')
+        combined = self._finalize_extracted_tables(all_dfs, expected_headers)
         step_timings["parse_html_tables"] = round(time.time() - step_started_at, 3)
 
         elapsed = time.time() - t0
         step_timings["total"] = round(elapsed, 3)
         self.last_run_stats = {
             "timings": step_timings,
-            "pages_with_tables": [p + 1 for p in pages_with_tables],
+            "pages_with_tables": [p + 1 for p in parsed_pages],
             "page_count": len(page_images),
             "effective_dpi": effective_dpi,
+            "layout_mode": self.layout_mode,
+            "layout_enabled": True,
             "ocr_images": len(ocr_images),
             "header_source_page": first_page_idx + 1,
             "skip_header_stitching": skip_header_stitching,
@@ -1254,12 +1550,11 @@ class BankStatementParser:
         return bool(probe_results) and all(result for _, result in probe_results)
 
     def _ocr_text(self, image: Image.Image) -> str:
-        future = self.ocr_dispatcher.submit(image, page_index=0, task_type="text")
+        future = self.ocr_dispatcher.submit(image, task_type="text")
         result = future.result()
-        content = result.contents[0] if result.contents else None
-        if not content:
+        if not result.content:
             return ""
-        return str(content).strip()
+        return str(result.content).strip()
 
     @staticmethod
     def _header_text_tokens(text: str) -> List[str]:
@@ -1377,6 +1672,9 @@ class BankStatementParser:
         )
         return image.resize(new_size, Image.Resampling.LANCZOS)
 
+    def _submit_ocr_task(self, image: Image.Image, *, task_type: str) -> Future[OCRTaskResult]:
+        return self.ocr_dispatcher.submit(image, task_type=task_type)
+
     def _ocr_tables_parallel(
         self,
         stitched_images: List[Tuple[int, Image.Image]],
@@ -1391,7 +1689,7 @@ class BankStatementParser:
         )
 
         results: List[Tuple[int, Optional[str]]] = []
-        ocr_task_results: List[DocumentOCRTaskResult] = []
+        ocr_task_results: List[OCRTaskResult] = []
 
         for batch_index, batch in enumerate(batches, start=1):
             batch_workers = self._resolve_ocr_batch_workers(len(batch))
@@ -1407,36 +1705,19 @@ class BankStatementParser:
                     f"{batch_workers} worker(s)"
                 )
 
-            if self.ocr_backend_mode == "page_http":
-                pending = {
-                    self.ocr_dispatcher.submit(
-                        img,
-                        page_index=page_idx,
-                        task_type="table",
-                    ): (page_idx,)
-                    for page_idx, img in batch
-                }
-            else:
-                page_indices = [page_idx for page_idx, _ in batch]
-                images = [img for _, img in batch]
-                pending = {
-                    self.ocr_dispatcher.submit_document(
-                        images,
-                        page_indices=page_indices,
-                        task_type="table",
-                    ): tuple(page_indices)
-                }
+            pending = {
+                self._submit_ocr_task(img, task_type="table"): page_idx
+                for page_idx, img in batch
+            }
             for future in as_completed(pending):
-                page_indices = pending[future]
+                page_idx = pending[future]
                 try:
                     task_result = future.result()
                     ocr_task_results.append(task_result)
-                    for page_idx, content in zip(page_indices, task_result.contents):
-                        results.append((page_idx, content))
+                    results.append((page_idx, task_result.content))
                 except Exception as exc:
-                    page_range = ", ".join(str(page_idx + 1) for page_idx in page_indices)
-                    print(f"        ✗ Page(s) {page_range}: OCR failed ({exc})")
-                    results.extend((page_idx, None) for page_idx in page_indices)
+                    print(f"        ✗ Page {page_idx + 1}: OCR failed ({exc})")
+                    results.append((page_idx, None))
 
         results.sort(key=lambda x: x[0])
         return results, self._summarize_ocr_metrics(ocr_task_results)
@@ -1448,7 +1729,8 @@ class BankStatementParser:
             max(1, self.ocr_connection_pool_size),
         )
 
-    def _empty_ocr_metrics(self) -> Dict[str, float]:
+    @staticmethod
+    def _empty_ocr_metrics() -> Dict[str, float]:
         return {
             "task_count": 0,
             "success_count": 0,
@@ -1462,12 +1744,9 @@ class BankStatementParser:
             "total_mean": 0.0,
             "total_max": 0.0,
             "max_queue_size_at_submit": 0.0,
-            "batch_size_mean": 0.0,
-            "batch_size_max": 0.0,
-            "backend_mode": self.ocr_backend_mode,
         }
 
-    def _summarize_ocr_metrics(self, task_results: List[DocumentOCRTaskResult]) -> Dict[str, float]:
+    def _summarize_ocr_metrics(self, task_results: List[OCRTaskResult]) -> Dict[str, float]:
         if not task_results:
             return self._empty_ocr_metrics()
 
@@ -1477,7 +1756,6 @@ class BankStatementParser:
         total_times = [item.total_seconds for item in task_results]
         status_codes = [item.status_code for item in task_results]
         submitted_queue_sizes = [item.queue_size_at_submit for item in task_results]
-        batch_sizes = [item.batch_size for item in task_results]
 
         return {
             "task_count": float(len(task_results)),
@@ -1492,9 +1770,6 @@ class BankStatementParser:
             "total_mean": round(sum(total_times) / len(total_times), 6),
             "total_max": round(max(total_times), 6),
             "max_queue_size_at_submit": float(max(submitted_queue_sizes)),
-            "batch_size_mean": round(sum(batch_sizes) / len(batch_sizes), 6),
-            "batch_size_max": float(max(batch_sizes)),
-            "backend_mode": self.ocr_backend_mode,
         }
 
     @staticmethod
@@ -1540,21 +1815,10 @@ class BankStatementParser:
 
     @staticmethod
     def _is_non_transaction_row(row_values: List[str]) -> bool:
-        text = " ".join(value.lower() for value in row_values if value).strip()
+        text = _row_text(row_values)
         if not text:
             return True
-
-        markers = (
-            "legends used in the statement",
-            "transaction total",
-            "closing balance",
-            "opening balance",
-            "iconn",
-            "auto sweep",
-            "rev sweep",
-            "sweep trf",
-        )
-        return any(marker in text for marker in markers)
+        return _is_non_transaction_text(text)
 
     @staticmethod
     def _should_merge_undated_row(row_values: List[str], date_column_index: int) -> bool:
@@ -1634,7 +1898,7 @@ class BankStatementParser:
                     previous[column] = f"{previous_value} {current_value}".strip()
 
         if not merged_rows:
-            return df.iloc[0:0]
+            return df
 
         return pd.DataFrame(merged_rows, columns=df.columns)
 
@@ -1647,6 +1911,12 @@ class BankStatementParser:
             return df
 
         mask = df[date_column].fillna("").astype(str).str.strip().apply(is_date_like)
+        
+        # Avoid dropping ALL rows if date detection completely failed
+        if mask.sum() == 0:
+            print("  Warning: No rows had a valid date. Skipping date filtering.")
+            return df
+
         removed = int((~mask).sum())
         if removed > 0:
             print(f"  Removed {removed} row(s) without a valid date")

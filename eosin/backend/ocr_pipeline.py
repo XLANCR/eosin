@@ -35,6 +35,13 @@ class DocumentOCRTaskResult:
     flush_reason: str
     backend_name: str
 
+    @property
+    def content(self) -> Optional[str]:
+        return self.contents[0] if self.contents else None
+
+
+OCRTaskResult = DocumentOCRTaskResult
+
 
 def _extract_tables(response_text: str) -> list[str]:
     matched_tables = re.findall(
@@ -399,7 +406,13 @@ class OCRPipelineDispatcher:
     ) -> Future[DocumentOCRTaskResult]:
         return self._backend.submit(images, page_indices=page_indices, task_type=task_type)
 
-    def submit(self, image: Image.Image, *, page_index: int, task_type: str) -> Future[DocumentOCRTaskResult]:
+    def submit(
+        self,
+        image: Image.Image,
+        *,
+        page_index: int = 0,
+        task_type: str,
+    ) -> Future[DocumentOCRTaskResult]:
         return self.submit_document([image], page_indices=[page_index], task_type=task_type)
 
     def close(self) -> None:
