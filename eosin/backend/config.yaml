@@ -12,7 +12,7 @@ pipeline:
     request_timeout: 300
   max_workers: 32
   page_loader:
-    max_tokens: 12000
+    max_tokens: 7000
     pdf_dpi: 200
     task_prompt_mapping:
       table: "Table Recognition:"

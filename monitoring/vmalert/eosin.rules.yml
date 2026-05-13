@@ -1,0 +1,43 @@
+groups:
+  - name: eosin-api
+    interval: 30s
+    rules:
+      - alert: EosinMetricsPushFailures
+        expr: increase(eosin_metrics_push_total{status="failure"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: eosin-bank-parser
+        annotations:
+          summary: "Eosin metrics pushes are failing"
+          description: "The worker has failed to push metric snapshots during the last 10 minutes."
+
+      - alert: EosinVllmMetricsUnavailableDuringTraffic
+        expr: avg_over_time(eosin_vllm_metrics_proxy_up[10m]) < 1 and sum(rate(eosin_parse_requests_total{status="success"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: eosin-bank-parser
+        annotations:
+          summary: "Local vLLM metrics are unavailable while the parser is serving traffic"
+          description: "The parser could not proxy vLLM /metrics successfully during active traffic for at least 10 minutes."
+
+      - alert: EosinOcrQueueBacklog
+        expr: histogram_quantile(0.95, sum by (le) (rate(eosin_ocr_queue_wait_seconds_bucket{aggregation="max"}[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+          service: eosin-bank-parser
+        annotations:
+          summary: "OCR queue backlog is high"
+          description: "The p95 OCR queue wait has been above 30 seconds for 10 minutes."
+
+      - alert: EosinGpuUnderutilizedDuringLoad
+        expr: avg_over_time(eosin_gpu_utilization_ratio[15m]) < 0.55 and sum(rate(eosin_parse_requests_total{status="success"}[15m])) > 0.01
+        for: 15m
+        labels:
+          severity: info
+          service: eosin-bank-parser
+        annotations:
+          summary: "GPU utilization is low while requests are being served"
+          description: "Average GPU utilization has remained below 55% over 15 minutes while the parser is handling traffic."

@@ -43,6 +43,7 @@ class BankParserService:
         self,
         config_path: str | None = None,
         *,
+        layout_mode: Optional[str] = None,
         save_debug_images: Optional[bool] = None,
         parse_testing: Optional[bool] = None,
         enable_ocr_batching: Optional[bool] = None,
@@ -51,11 +52,18 @@ class BankParserService:
         layout_max_concurrency: Optional[int] = None,
         ocr_pipeline_workers: Optional[int] = None,
         ocr_pipeline_queue_size: Optional[int] = None,
+        ocr_backend_mode: Optional[str] = None,
+        ocr_batch_drain_max_batch_size: Optional[int] = None,
+        ocr_batch_drain_max_wait_seconds: Optional[float] = None,
+        enable_page_ocr_retry: Optional[bool] = None,
+        capture_raw_ocr_debug: Optional[bool] = None,
+        page_ocr_retry_dpi: Optional[int] = None,
         backend_startup_timeout: float = 180.0,
         backend_retry_interval: float = 5.0,
     ):
         default_config_path = Path(__file__).resolve().parent / "config.yaml"
         self.config_path = str(config_path or default_config_path)
+        self.layout_mode = layout_mode
         self._settings = {
             "ENABLE_OCR_HEADER_FALLBACK": False,
         }
@@ -73,6 +81,18 @@ class BankParserService:
             self._settings["OCR_PIPELINE_WORKERS"] = ocr_pipeline_workers
         if ocr_pipeline_queue_size is not None:
             self._settings["OCR_PIPELINE_QUEUE_SIZE"] = ocr_pipeline_queue_size
+        if ocr_backend_mode is not None:
+            self._settings["OCR_BACKEND_MODE"] = ocr_backend_mode
+        if ocr_batch_drain_max_batch_size is not None:
+            self._settings["OCR_BATCH_DRAIN_MAX_BATCH_SIZE"] = ocr_batch_drain_max_batch_size
+        if ocr_batch_drain_max_wait_seconds is not None:
+            self._settings["OCR_BATCH_DRAIN_MAX_WAIT_SECONDS"] = ocr_batch_drain_max_wait_seconds
+        if enable_page_ocr_retry is not None:
+            self._settings["ENABLE_PAGE_OCR_RETRY"] = enable_page_ocr_retry
+        if capture_raw_ocr_debug is not None:
+            self._settings["CAPTURE_RAW_OCR_DEBUG"] = capture_raw_ocr_debug
+        if page_ocr_retry_dpi is not None:
+            self._settings["PAGE_OCR_RETRY_DPI"] = page_ocr_retry_dpi
 
         self._backend_startup_timeout = backend_startup_timeout
         self._backend_retry_interval = backend_retry_interval
@@ -90,7 +110,10 @@ class BankParserService:
         deadline = time.monotonic() + self._backend_startup_timeout
         while True:
             try:
-                return impl.BankStatementParser(self.config_path)
+                return impl.BankStatementParser(
+                    self.config_path,
+                    layout_mode=self.layout_mode,
+                )
             except (ConnectionError, TimeoutError) as exc:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
