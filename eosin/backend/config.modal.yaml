@@ -8,11 +8,11 @@ pipeline:
     api_path: /v1/chat/completions
     verify_ssl: false
     connection_pool_size: 32
-    request_timeout: 180
+    request_timeout: 300
     retry_max_attempts: 0
   max_workers: 32
   page_loader:
-    max_tokens: 3072
+    max_tokens: 7000
     pdf_dpi: 200
     task_prompt_mapping:
       table: "Table Recognition:"

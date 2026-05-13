@@ -252,6 +252,8 @@ def test_modal_config_uses_model_native_table_prompt() -> None:
     modal_config = Path("eosin/backend/config.modal.yaml").read_text()
 
     assert 'table: "Table Recognition:"' in modal_config
+    assert "max_tokens: 7000" in modal_config
+    assert "request_timeout: 300" in modal_config
     assert "Return exactly one valid HTML <table>" not in modal_config
 
 
