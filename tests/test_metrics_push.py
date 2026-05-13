@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
+
 from eosin.backend.metrics import MetricsPushClient
+from eosin.backend.metrics import MetricsManager
 
 
 class RecordingSession:
@@ -24,7 +27,7 @@ def test_metrics_push_client_sends_auth_and_tailscale_proxy() -> None:
     session = RecordingSession()
     client = MetricsPushClient(
         enabled=True,
-        push_url="http://100.99.119.108:8428/api/v1/import/prometheus",
+        push_url="http://100.64.0.1:8428/api/v1/import/prometheus",
         timeout_seconds=1.5,
         auth_header_name="X-Eosin-Key",
         auth_header_value="secret",
@@ -59,3 +62,29 @@ def test_metrics_push_client_noops_when_disabled() -> None:
     client.push(b"metric 1\n")
 
     assert session.calls == []
+
+
+def test_metrics_manager_pushes_periodically_while_requests_are_active(monkeypatch) -> None:
+    monkeypatch.setenv("BANK_PARSER_METRICS_PUSH_ENABLE", "true")
+    monkeypatch.setenv("BANK_PARSER_METRICS_PUSH_INTERVAL", "1.0")
+    manager = MetricsManager()
+
+    class RecordingPushClient:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def push(self, payload: bytes) -> None:
+            self.calls += 1
+
+    push_client = RecordingPushClient()
+    manager._push_client = push_client
+    manager._active_push_interval = 0.05
+    manager.start_background_samplers()
+    manager.track_request_started(1024)
+    time.sleep(0.16)
+    manager.track_request_finished(0.2)
+    time.sleep(0.08)
+
+    assert push_client.calls >= 2

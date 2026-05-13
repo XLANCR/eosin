@@ -255,6 +255,130 @@ def test_select_best_table_candidate_prefers_header_match_on_followup_pages():
     assert len(dataframe) == 2
 
 
+def test_parse_html_table_keeps_transaction_thead_as_data_and_infers_axis_columns():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead>
+            <tr><th>21-01-2020</th><th></th><th>UPI/P2A/002122279638/BHARATH S/IDBI Bank/UPI</th><th>200.00</th><th></th><th>4801.25</th><th>227</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>22-01-2020</td><td></td><td>UPI/P2M/002210706586/Green Baw/Paytm Pay/UPI</td><td>60.00</td><td></td><td>4741.25</td><td>227</td></tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert list(dataframe.columns) == [
+        "Tran Date",
+        "col_1",
+        "Particulars",
+        "Debit",
+        "Credit",
+        "Balance",
+        "Init. Br",
+    ]
+    assert dataframe.iloc[0]["Tran Date"] == "21-01-2020"
+    assert dataframe.iloc[0]["Particulars"] == "UPI/P2A/002122279638/BHARATH S/IDBI Bank/UPI"
+    assert dataframe.iloc[0]["Debit"] == "200.00"
+    assert dataframe.iloc[0]["Balance"] == "4801.25"
+    assert dataframe.iloc[0]["Init. Br"] == "227"
+
+
+def test_parse_html_table_names_blank_axis_date_header_from_row_shape():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead>
+            <tr><th></th><th></th><th>Particulars</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Init. Br</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>02-01-2020</td><td></td><td>POS/SANAT NAGAR,/HYDERABAD/020120/15:40</td><td>1110.00</td><td></td><td>13605.00</td><td>227</td></tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert list(dataframe.columns) == [
+        "Tran Date",
+        "col_1",
+        "Particulars",
+        "Debit",
+        "Credit",
+        "Balance",
+        "Init. Br",
+    ]
+    assert dataframe.iloc[0]["Tran Date"] == "02-01-2020"
+    assert dataframe.iloc[0]["Particulars"] == "POS/SANAT NAGAR,/HYDERABAD/020120/15:40"
+
+
+def test_parse_html_table_aligns_headerless_continuation_rows_to_expected_blank_reference_column():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead>
+            <tr><th>04-03-2020</th><th>POS/SRI SAI SERVICES/HYDERABAD/040320/07:20</th><th>1010.00</th><th></th><th>2146.93</th><th>227</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>05-03-2020</td><td>BY TRANSFER</td><td></td><td>49750.00</td><td>51396.93</td><td>227</td></tr>
+          </tbody>
+        </table>
+        """,
+        expected_headers=["Tran Date", "col_1", "Particulars", "Debit", "Credit", "Balance", "Init. Br"],
+    )
+
+    assert list(dataframe.columns) == ["Tran Date", "col_1", "Particulars", "Debit", "Credit", "Balance", "Init. Br"]
+    assert dataframe.iloc[0].to_dict() == {
+        "Tran Date": "04-03-2020",
+        "col_1": "",
+        "Particulars": "POS/SRI SAI SERVICES/HYDERABAD/040320/07:20",
+        "Debit": "1010.00",
+        "Credit": "",
+        "Balance": "2146.93",
+        "Init. Br": "227",
+    }
+    assert dataframe.iloc[1].to_dict() == {
+        "Tran Date": "05-03-2020",
+        "col_1": "",
+        "Particulars": "BY TRANSFER",
+        "Debit": "",
+        "Credit": "49750.00",
+        "Balance": "51396.93",
+        "Init. Br": "227",
+    }
+
+
+def test_parse_html_table_aligns_colspan_description_to_expected_blank_reference_column():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <tbody>
+            <tr><td>05-05-2020</td><td colspan="2">BY SALARY</td><td></td><td>24123.00</td><td>24316.46</td><td>227</td></tr>
+          </tbody>
+        </table>
+        """,
+        expected_headers=["Tran Date", "col_1", "Particulars", "Debit", "Credit", "Balance", "Init. Br"],
+    )
+
+    assert dataframe.iloc[0].to_dict() == {
+        "Tran Date": "05-05-2020",
+        "col_1": "",
+        "Particulars": "BY SALARY",
+        "Debit": "",
+        "Credit": "24123.00",
+        "Balance": "24316.46",
+        "Init. Br": "227",
+    }
+
+
 def test_select_best_table_candidate_rejects_account_summary_only_payload():
     module = _load_eosin_pipeline_module()
 
@@ -270,6 +394,58 @@ def test_select_best_table_candidate_rejects_account_summary_only_payload():
     )
 
     assert selected is None
+
+
+def test_extract_transaction_dataframes_keeps_multiple_tables_from_one_document_response():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    combined_html = """
+    <table>
+      <tr><th>Account Summary</th><th>Value</th></tr>
+      <tr><td>Closing Balance</td><td>1000.00</td></tr>
+    </table>
+    <table>
+      <tr><th>Date</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th></tr>
+      <tr><td>01/01/2024</td><td>ATM Withdrawal</td><td>500.00</td><td></td><td>9500.00</td></tr>
+      <tr><td>02/01/2024</td><td>Salary</td><td></td><td>20000.00</td><td>29500.00</td></tr>
+    </table>
+    <table>
+      <tr><th>Date</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th></tr>
+      <tr><td>03/01/2024</td><td>UPI Payment</td><td>250.00</td><td></td><td>29250.00</td></tr>
+    </table>
+    """
+
+    all_dfs, expected_headers, selected_pages = parser._extract_transaction_dataframes(
+        [(0, combined_html)],
+        "dummy.pdf",
+    )
+
+    assert expected_headers == ["Date", "Description", "Debit", "Credit", "Balance"]
+    assert selected_pages == [0]
+    assert len(all_dfs) == 1
+    assert sum(len(df) for df in all_dfs) == 2
+
+
+def test_remove_header_rows_drops_fuzzy_repeated_header_rows():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    df = pd.DataFrame(
+        [
+            ["Date", "Description/Narration", "Value date", "Chq/Ref. No.", "Debit(D"],
+            ["01/01/2024", "UPI Payment", "01/01/2024", "12345", "250.00"],
+        ],
+        columns=["Date", "Description/Narration", "Value date", "Chq/Ref. No.", "Debit(Dr.)"],
+    )
+
+    cleaned = parser._remove_header_rows(
+        df,
+        ["Date", "Description/Narration", "Value date", "Chq/Ref. No.", "Debit(Dr.)"],
+    )
+
+    assert len(cleaned) == 1
+    assert cleaned.iloc[0]["Date"] == "01/01/2024"
 
 
 def test_select_best_table_candidate_keeps_transaction_table_with_opening_balance_row():
@@ -330,3 +506,292 @@ def test_extract_transaction_dataframes_combines_split_pages():
     assert len(combined) == 2
     assert list(combined.columns) == ["Date", "Description", "Debit", "Credit", "Balance"]
     parser.close()
+
+
+def test_finalize_extracted_tables_drops_adjacent_duplicate_rows_after_normalization():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    first_page = pd.DataFrame(
+        [
+            {
+                "Date": "01/01/2024",
+                "Description": "UPI PAYMENT",
+                "Debit": "250.00",
+                "Credit": "",
+                "Balance": "750.00",
+            },
+            {
+                "Date": "02/01/2024",
+                "Description": "ATM Withdrawal",
+                "Debit": "100.00",
+                "Credit": "",
+                "Balance": "650.00",
+            },
+        ]
+    )
+    second_page = pd.DataFrame(
+        [
+            {
+                "Date": " 02/01/2024 ",
+                "Description": "ATM   Withdrawal",
+                "Debit": "100.00",
+                "Credit": "",
+                "Balance": "650.00",
+            },
+            {
+                "Date": "03/01/2024",
+                "Description": "Salary",
+                "Debit": "",
+                "Credit": "5000.00",
+                "Balance": "5650.00",
+            },
+        ]
+    )
+
+    combined = parser._finalize_extracted_tables(
+        [first_page, second_page],
+        ["Date", "Description", "Debit", "Credit", "Balance"],
+    )
+
+    assert len(combined) == 3
+    assert list(combined["Date"]) == ["01/01/2024", "02/01/2024", "03/01/2024"]
+
+
+def test_evaluate_page_ocr_result_marks_repeated_garbage_as_suspicious():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    html = """
+    <table>
+      <tr><th>Date</th><th>Description/Narration</th><th>Debit(Dr.)</th><th>Credit(Cr.)</th><th>Balance</th></tr>
+      <tr><td>01 Apr 2023</td><td>IMPS313518140119K C KTRADERS.CBNR000000000000000000000000000000000000000000000000000000000000</td><td>1500</td><td>-</td><td>5528</td></tr>
+      <tr><td>01 Apr 2023</td><td>IMPS313518140119K C KTRADERS.CBNR000000000000000000000000000000000000000000000000000000000000</td><td>1500</td><td>-</td><td>5528</td></tr>
+      <tr><td>01 Apr 2023</td><td>Date Description/Narration Debit(Dr.) Credit(Cr.) Balance</td><td></td><td></td><td></td></tr>
+    </table>
+    """
+
+    evaluation = parser._evaluate_page_ocr_result(
+        page_idx=0,
+        html_content=html,
+        expected_headers=None,
+        pass_label="primary",
+    )
+
+    assert evaluation["selected"] is True
+    assert evaluation["suspicious"] is True
+    assert evaluation["selected_table_index"] == 0
+    assert "long_cell" in evaluation["reasons"]
+    assert "duplicate_rows" in evaluation["reasons"]
+    assert evaluation["row_count"] == 3
+
+
+def test_select_best_page_ocr_evaluation_prefers_cleaner_retry_pass():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    primary = {
+        "page_index": 0,
+        "pass_label": "primary",
+        "selected": True,
+        "suspicious": True,
+        "quality_score": 15,
+        "reasons": ["duplicate_rows", "long_cell"],
+        "raw_html": "<table></table>",
+        "selected_table_index": 0,
+        "table_count": 1,
+        "row_count": 4,
+        "columns": ["Date", "Description", "Debit", "Credit", "Balance"],
+        "dataframe": pd.DataFrame([{"Date": "01/01/2024"}]),
+        "raw_headers": ["Date", "Description", "Debit", "Credit", "Balance"],
+    }
+    retry = {
+        "page_index": 0,
+        "pass_label": "retry_high_dpi",
+        "selected": True,
+        "suspicious": False,
+        "quality_score": 78,
+        "reasons": [],
+        "raw_html": "<table></table>",
+        "selected_table_index": 0,
+        "table_count": 1,
+        "row_count": 3,
+        "columns": ["Date", "Description", "Debit", "Credit", "Balance"],
+        "dataframe": pd.DataFrame([{"Date": "01/01/2024"}]),
+        "raw_headers": ["Date", "Description", "Debit", "Credit", "Balance"],
+    }
+
+    selected = parser._select_best_page_ocr_evaluation([primary, retry])
+
+    assert selected["pass_label"] == "retry_high_dpi"
+    assert selected["quality_score"] == 78
+
+
+def test_evaluate_page_ocr_result_flags_column_shift_without_repairing_values():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    html = """
+    <table>
+      <thead>
+        <tr>
+          <th>Tran Date</th><th>Particulars</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Init. Br</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>05-02-2020</td><td></td><td></td><td>49750.00</td><td></td><td>49771.25</td></tr>
+        <tr><td>05-02-2020</td><td>BY TRANSFER</td><td></td><td></td><td>49671.25</td><td>227</td></tr>
+      </tbody>
+    </table>
+    """
+
+    evaluation = parser._evaluate_page_ocr_result(
+        page_idx=0,
+        html_content=html,
+        expected_headers=["Tran Date", "Particulars", "Debit", "Credit", "Balance", "Init. Br"],
+        pass_label="primary",
+    )
+
+    dataframe = evaluation["dataframe"]
+    assert isinstance(dataframe, pd.DataFrame)
+    assert dataframe.iloc[0]["Init. Br"] == "49771.25"
+    assert "money_in_non_amount_columns" in evaluation["reasons"]
+    assert "dated_rows_missing_text" in evaluation["reasons"]
+    assert evaluation["suspicious"] is True
+
+
+def test_finalize_extracted_tables_drops_null_heavy_and_runaway_rows():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    dirty = pd.DataFrame(
+        [
+            {
+                "Date": "01/01/2024",
+                "Description": "Opening balance",
+                "Debit": "",
+                "Credit": "",
+                "Balance": "1000.00",
+            },
+            {
+                "Date": "02/01/2024",
+                "Description": "IMPS313518140119K C KTRADERS.CBNR000000000000000000000000000000000000000000000000000000000000",
+                "Debit": "1500.00",
+                "Credit": "",
+                "Balance": "5528.00",
+            },
+            {
+                "Date": "03/01/2024",
+                "Description": "Salary",
+                "Debit": "",
+                "Credit": "5000.00",
+                "Balance": "6528.00",
+            },
+            {
+                "Date": "04/01/2024",
+                "Description": "",
+                "Debit": "",
+                "Credit": "",
+                "Balance": "",
+            },
+        ]
+    )
+
+    cleaned = parser._finalize_extracted_tables(
+        [dirty],
+        ["Date", "Description", "Debit", "Credit", "Balance"],
+    )
+
+    assert list(cleaned["Date"]) == ["01/01/2024", "03/01/2024"]
+
+
+def test_finalize_extracted_tables_keeps_long_legitimate_descriptions():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    long_description = (
+        "IMPS/57GS5G3KP1353LW5BINDASS MEDIA ENTERTAINMENT AND WE/"
+        "AMAZON SELLER SERVIC/XXX6004/RRN: 201810089747/HSBC BANK"
+    )
+    dirty = pd.DataFrame(
+        [
+            {
+                "TXN DATE": "18-Jan-2022",
+                "DESCRIPTION": long_description,
+                "DEBITS": "0",
+                "CREDITS": "101.16",
+                "BALANCE": "47,989.75",
+            }
+        ]
+    )
+
+    cleaned = parser._finalize_extracted_tables(
+        [dirty],
+        ["TXN DATE", "DESCRIPTION", "DEBITS", "CREDITS", "BALANCE"],
+    )
+
+    assert len(cleaned) == 1
+    assert cleaned.iloc[0]["DESCRIPTION"] == long_description
+
+
+def test_finalize_extracted_tables_merges_semantic_duplicate_columns():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    dirty = pd.DataFrame(
+        [
+            {
+                "Date": "01/01/2024",
+                "Description": "UPI",
+                "Chq./Ref. No.": "",
+                "Chq/Ref. No.": "ABC123",
+                "Debit": "10.00",
+                "Debt/(Dr.)": "",
+                "Credit": "",
+                "Balance": "990.00",
+            },
+            {
+                "Date": "02/01/2024",
+                "Description": "Salary",
+                "Chq./Ref. No.": "XYZ789",
+                "Chq/Ref. No.": "",
+                "Debit": "",
+                "Debt/(Dr.)": "20.00",
+                "Credit": "1000.00",
+                "Balance": "1990.00",
+            },
+        ]
+    )
+
+    cleaned = parser._finalize_extracted_tables(
+        [dirty],
+        ["Date", "Description", "Chq./Ref. No.", "Debit", "Credit", "Balance"],
+    )
+
+    assert "Chq/Ref. No." not in cleaned.columns
+    assert "Debt/(Dr.)" not in cleaned.columns
+    assert list(cleaned["Chq./Ref. No."]) == ["ABC123", "XYZ789"]
+    assert list(cleaned["Debit"]) == ["10.00", "20.00"]
+
+
+def test_build_document_quality_summary_flags_low_confidence():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+
+    df = pd.DataFrame(
+        [
+            {"Date": "01/01/2024", "Description": "Salary", "Debit": "", "Credit": "5000.00", "Balance": "5000.00"},
+            {"Date": "01/01/2024", "Description": "Salary", "Debit": "", "Credit": "5000.00", "Balance": "5000.00"},
+        ]
+    )
+    page_evaluations = [
+        {"page_index": 0, "pass_label": "primary", "selected": True, "suspicious": True, "quality_score": 18, "reasons": ["duplicate_rows"], "retried": True},
+        {"page_index": 1, "pass_label": "retry_high_dpi", "selected": True, "suspicious": False, "quality_score": 64, "reasons": [], "retried": True},
+    ]
+
+    summary = parser._build_document_quality_summary(df, page_evaluations)
+
+    assert summary["low_confidence"] is True
+    assert "suspicious_pages_present" in summary["reasons"]
+    assert "duplicate_rows_remaining" in summary["reasons"]
+    assert summary["retried_pages"] == [1, 2]

@@ -55,6 +55,9 @@ class BankParserService:
         ocr_backend_mode: Optional[str] = None,
         ocr_batch_drain_max_batch_size: Optional[int] = None,
         ocr_batch_drain_max_wait_seconds: Optional[float] = None,
+        enable_page_ocr_retry: Optional[bool] = None,
+        capture_raw_ocr_debug: Optional[bool] = None,
+        page_ocr_retry_dpi: Optional[int] = None,
         backend_startup_timeout: float = 180.0,
         backend_retry_interval: float = 5.0,
     ):
@@ -84,6 +87,12 @@ class BankParserService:
             self._settings["OCR_BATCH_DRAIN_MAX_BATCH_SIZE"] = ocr_batch_drain_max_batch_size
         if ocr_batch_drain_max_wait_seconds is not None:
             self._settings["OCR_BATCH_DRAIN_MAX_WAIT_SECONDS"] = ocr_batch_drain_max_wait_seconds
+        if enable_page_ocr_retry is not None:
+            self._settings["ENABLE_PAGE_OCR_RETRY"] = enable_page_ocr_retry
+        if capture_raw_ocr_debug is not None:
+            self._settings["CAPTURE_RAW_OCR_DEBUG"] = capture_raw_ocr_debug
+        if page_ocr_retry_dpi is not None:
+            self._settings["PAGE_OCR_RETRY_DPI"] = page_ocr_retry_dpi
 
         self._backend_startup_timeout = backend_startup_timeout
         self._backend_retry_interval = backend_retry_interval

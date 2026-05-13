@@ -277,6 +277,47 @@
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(eosin_ocr_document_page_count_bucket{aggregation=\"max\"}[5m])))",
+          "legendFormat": "pages per OCR request p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(eosin_ocr_backend_batch_size_bucket{aggregation=\"max\"}[5m])))",
+          "legendFormat": "backend flush size p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(eosin_ocr_task_count_bucket[5m])))",
+          "legendFormat": "OCR tasks per PDF p95",
+          "refId": "C"
+        }
+      ],
+      "title": "OCR Workload Shape",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "VictoriaMetrics"
+      },
+      "fieldConfig": {
+        "defaults": {
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -298,17 +339,22 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 24
       },
       "id": 8,
       "targets": [
         {
-          "expr": "probe_success{job=~\"eosin-blackbox-.*\"}",
-          "legendFormat": "{{job}} {{instance}}",
+          "expr": "sum by (status) (rate(eosin_metrics_push_total[5m]))",
+          "legendFormat": "push {{status}}",
           "refId": "A"
+        },
+        {
+          "expr": "avg_over_time(eosin_vllm_metrics_proxy_up[5m])",
+          "legendFormat": "vllm metrics proxy",
+          "refId": "B"
         }
       ],
-      "title": "External Probes",
+      "title": "Metrics Push Health",
       "type": "timeseries"
     }
   ],

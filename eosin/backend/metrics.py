@@ -72,6 +72,8 @@ PDF_PAGE_COUNT = Histogram("eosin_pdf_page_count", "Rendered page count per PDF.
 TABLE_ROW_COUNT = Histogram("eosin_table_row_count", "Extracted bank statement rows per PDF.", buckets=(0, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000))
 PIPELINE_STAGE_SECONDS = Histogram("eosin_pipeline_stage_seconds", "Per-stage parser timings reported by the pipeline.", labelnames=("stage",), buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 160, 320, 640))
 OCR_TASK_COUNT = Histogram("eosin_ocr_task_count", "Number of OCR tasks emitted by one parser request.", buckets=(1, 2, 4, 8, 16, 32, 64, 128))
+OCR_DOCUMENT_PAGE_COUNT = Histogram("eosin_ocr_document_page_count", "Number of PDF pages included in each document-level OCR request.", labelnames=("aggregation",), buckets=(1, 2, 4, 8, 16, 32, 64, 128))
+OCR_BACKEND_BATCH_SIZE = Histogram("eosin_ocr_backend_batch_size", "Number of document OCR jobs grouped by the OCR backend drain loop.", labelnames=("aggregation",), buckets=(1, 2, 4, 8, 16, 32, 64, 96, 128, 256))
 OCR_QUEUE_WAIT_SECONDS = Histogram("eosin_ocr_queue_wait_seconds", "Mean or max OCR queue wait per parser request.", labelnames=("aggregation",), buckets=(0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 160))
 OCR_BUILD_REQUEST_SECONDS = Histogram("eosin_ocr_build_request_seconds", "Mean or max OCR request-build time per parser request.", labelnames=("aggregation",), buckets=(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5))
 OCR_REQUEST_SECONDS = Histogram("eosin_ocr_request_seconds", "Mean or max OCR network/inference request time per parser request.", labelnames=("aggregation",), buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 160, 320))
@@ -151,9 +153,14 @@ class MetricsManager:
         self._vllm_metrics_cache_ttl = max(1.0, float(os.getenv("BANK_PARSER_VLLM_METRICS_CACHE_TTL", "2.0")))
         self._gpu_metrics_enabled = os.getenv("BANK_PARSER_GPU_METRICS_ENABLE", "true").strip().lower() in {"1", "true", "yes", "on"}
         self._gpu_metrics_interval = max(0.5, float(os.getenv("BANK_PARSER_GPU_METRICS_INTERVAL", "1.0")))
+        self._active_push_interval = max(1.0, float(os.getenv("BANK_PARSER_METRICS_PUSH_INTERVAL", "5.0")))
         self._push_queue: queue.Queue[object] = queue.Queue(maxsize=1)
         self._push_thread_started = False
         self._push_thread_lock = threading.Lock()
+        self._active_push_thread_started = False
+        self._active_push_thread_lock = threading.Lock()
+        self._active_request_count = 0
+        self._active_request_count_lock = threading.Lock()
         self._vllm_cache_lock = threading.Lock()
         self._gpu_thread_started = False
         self._gpu_thread_lock = threading.Lock()
@@ -174,6 +181,7 @@ class MetricsManager:
 
     def start_background_samplers(self) -> None:
         self._start_push_worker()
+        self._start_active_push_worker()
         if not self._gpu_metrics_enabled:
             GPU_METRICS_AVAILABLE.set(0)
             return
@@ -193,6 +201,18 @@ class MetricsManager:
             worker.start()
             self._push_thread_started = True
 
+    def _start_active_push_worker(self) -> None:
+        with self._active_push_thread_lock:
+            if self._active_push_thread_started or not self._push_client.enabled:
+                return
+            worker = threading.Thread(
+                target=self._active_push_loop,
+                name="eosin-metrics-active-push",
+                daemon=True,
+            )
+            worker.start()
+            self._active_push_thread_started = True
+
     def schedule_push(self) -> None:
         if not self._push_client.enabled:
             return
@@ -204,10 +224,15 @@ class MetricsManager:
     def track_request_started(self, pdf_bytes: int) -> None:
         REQUEST_INFLIGHT.inc()
         PDF_BYTES.observe(pdf_bytes)
+        with self._active_request_count_lock:
+            self._active_request_count += 1
+        self.schedule_push()
 
     def track_request_finished(self, elapsed_seconds: float) -> None:
         REQUEST_DURATION_SECONDS.observe(elapsed_seconds)
         REQUEST_INFLIGHT.dec()
+        with self._active_request_count_lock:
+            self._active_request_count = max(0, self._active_request_count - 1)
 
     def track_request_success(self, result_payload: dict[str, object]) -> None:
         REQUESTS_TOTAL.labels(status="success").inc()
@@ -246,6 +271,14 @@ class MetricsManager:
         try:
             OCR_TASK_COUNT.observe(float(ocr_metrics.get("task_count", 0.0) or 0.0))
             OCR_QUEUE_SIZE.observe(float(ocr_metrics.get("max_queue_size_at_submit", 0.0) or 0.0))
+            for metric_name, histogram in (
+                ("document_page_count", OCR_DOCUMENT_PAGE_COUNT),
+                ("backend_batch_size", OCR_BACKEND_BATCH_SIZE),
+            ):
+                mean_value = float(ocr_metrics.get(f"{metric_name}_mean", 0.0) or 0.0)
+                max_value = float(ocr_metrics.get(f"{metric_name}_max", 0.0) or 0.0)
+                histogram.labels(aggregation="mean").observe(mean_value)
+                histogram.labels(aggregation="max").observe(max_value)
             for metric_name, histogram in (("queue_wait", OCR_QUEUE_WAIT_SECONDS), ("build_request", OCR_BUILD_REQUEST_SECONDS), ("request", OCR_REQUEST_SECONDS), ("total", OCR_TOTAL_SECONDS)):
                 mean_value = float(ocr_metrics.get(f"{metric_name}_mean", 0.0) or 0.0)
                 max_value = float(ocr_metrics.get(f"{metric_name}_max", 0.0) or 0.0)
@@ -295,6 +328,14 @@ class MetricsManager:
                 METRICS_PUSH_SUCCESS_TOTAL.labels(status="failure").inc()
             finally:
                 self._push_queue.task_done()
+
+    def _active_push_loop(self) -> None:
+        while True:
+            time.sleep(self._active_push_interval)
+            with self._active_request_count_lock:
+                active_request_count = self._active_request_count
+            if active_request_count > 0:
+                self.schedule_push()
 
     def _gpu_sampler_loop(self) -> None:
         if pynvml is None:

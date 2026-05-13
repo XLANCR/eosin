@@ -7,15 +7,15 @@ pipeline:
     model: default
     api_path: /v1/chat/completions
     verify_ssl: false
-    connection_pool_size: 128
+    connection_pool_size: 32
     request_timeout: 180
     retry_max_attempts: 0
-  max_workers: 128
+  max_workers: 32
   page_loader:
     max_tokens: 3072
     pdf_dpi: 200
     task_prompt_mapping:
-      table: "Return exactly one valid HTML <table> for the transaction table only. No markdown, no prose, no explanation, and no surrounding text. Preserve row and column order."
+      table: "Table Recognition:"
     pdf_verbose: true
   logging:
     level: DEBUG

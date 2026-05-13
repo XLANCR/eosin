@@ -396,6 +396,7 @@ def summarize_results(
     fastest = sorted(results, key=lambda item: item.latency_seconds)[:10]
 
     rows_total = sum(result.rows_returned or 0 for result in ok_results)
+    pages_total = sum(result.page_count or 0 for result in ok_results)
     bytes_uploaded_total = sum(item.file_size_bytes for item in plan)
     bytes_downloaded_total = sum(result.response_bytes for result in results)
     successful_with_server_total = [item.server_total_seconds for item in ok_results if item.server_total_seconds is not None]
@@ -430,6 +431,8 @@ def summarize_results(
         "success_rate": round((len(ok_results) / len(results)) * 100, 3) if results else 0.0,
         "requests_per_second": round(len(results) / duration_seconds, 6) if duration_seconds > 0 else None,
         "rows_returned_total": rows_total,
+        "pages_processed_total": pages_total,
+        "pages_per_second": round(pages_total / duration_seconds, 6) if duration_seconds > 0 else None,
         "bytes_uploaded_total": bytes_uploaded_total,
         "bytes_downloaded_total": bytes_downloaded_total,
         "server_responses_dir": None,
@@ -511,6 +514,8 @@ def write_results(results_dir: Path, plan: list[PlannedRequest], results: list[R
         f"Requests sent: {summary['actual_results']}",
         f"Success / failure: {summary['successful_requests']} / {summary['failed_requests']}",
         f"Requests/sec: {summary['requests_per_second']}",
+        f"Pages processed total: {summary['pages_processed_total']}",
+        f"Pages/sec: {summary['pages_per_second']}",
         f"Latency p50/p95/p99: {summary['latency_seconds']['p50']} / {summary['latency_seconds']['p95']} / {summary['latency_seconds']['p99']}",
         f"Server total mean/p95/max: {summary['server_total_seconds']['mean']} / {summary['server_total_seconds']['p95']} / {summary['server_total_seconds']['max']}",
         f"Stage means render/layout/ocr/parse: {summary['stage_seconds']['render_mean']} / {summary['stage_seconds']['layout_mean']} / {summary['stage_seconds']['ocr_mean']} / {summary['stage_seconds']['parse_mean']}",

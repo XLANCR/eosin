@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import queue
 import re
 import threading
@@ -10,6 +11,26 @@ from typing import Iterable, Optional, Sequence
 
 from bs4 import BeautifulSoup
 from PIL import Image
+
+
+DOCUMENT_MAX_TOKENS_CAP = 4_096
+MULTI_PAGE_TABLE_PROMPT = (
+    " These images are ordered continuation pages from the same bank statement "
+    "transaction table. Return one HTML table containing every transaction row "
+    "from all images in order. Use the first page headers as the only header. "
+    "Do not repeat header rows inside the table body. Ignore account-summary "
+    "or profile tables."
+)
+
+
+def _resolve_document_max_tokens_cap() -> int:
+    raw_value = os.getenv("BANK_PARSER_OCR_DOCUMENT_MAX_TOKENS_CAP", "").strip()
+    if not raw_value:
+        return DOCUMENT_MAX_TOKENS_CAP
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return DOCUMENT_MAX_TOKENS_CAP
 
 
 @dataclass(frozen=True)
@@ -90,12 +111,33 @@ def build_document_request(page_loader, images: Sequence[Image.Image], *, task_t
         )
 
     request = dict(base_request)
+    if len(images) > 1 and task_type == "table":
+        merged_prompt_items = []
+        for item in prompt_items:
+            if item.get("type") == "text":
+                merged_prompt_items.append(
+                    {
+                        **item,
+                        "text": f"{item.get('text', '').strip()}{MULTI_PAGE_TABLE_PROMPT}",
+                    }
+                )
+            else:
+                merged_prompt_items.append(item)
+        prompt_items = merged_prompt_items
+
     request["messages"] = [
         {
             "role": "user",
             "content": [*image_items, *prompt_items],
         }
     ]
+    base_max_tokens = request.get("max_tokens")
+    if isinstance(base_max_tokens, int) and base_max_tokens > 0 and len(images) > 1:
+        scaled_max_tokens = base_max_tokens * len(images)
+        request["max_tokens"] = max(
+            base_max_tokens,
+            min(_resolve_document_max_tokens_cap(), scaled_max_tokens),
+        )
     return request
 
 
@@ -380,7 +422,7 @@ class OCRPipelineDispatcher:
         mode = backend_mode.strip().lower()
         self.backend_mode = mode
 
-        if mode == "batch_document":
+        if mode in {"batch_document", "page_batch"}:
             self._backend = BatchDrainOCRBackend(
                 page_loader=page_loader,
                 ocr_client=ocr_client,

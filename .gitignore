@@ -223,7 +223,15 @@ uv.lock
 /bank-statements/
 /load-test-results/
 /tmp/
+
+# Local OCR/debug artifacts
+/output/
 /outputs/
 /debug-images/
-/test_pdfs
-/docs 
+/modal-quality-results/
+/local-quality-results*/
+/minimal-glm-results*/
+/glm-ocr-probes*/
+/quality-compare-results*/
+/.graphify_corpus/
+/graphify-out/

@@ -71,6 +71,9 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
                     "BANK_PARSER_OCR_BATCH_DRAIN_MAX_WAIT_SECONDS",
                     1.0,
                 ),
+                enable_page_ocr_retry=_env_flag("BANK_PARSER_ENABLE_PAGE_OCR_RETRY", impl.ENABLE_PAGE_OCR_RETRY),
+                capture_raw_ocr_debug=_env_flag("BANK_PARSER_CAPTURE_RAW_OCR_DEBUG", impl.CAPTURE_RAW_OCR_DEBUG),
+                page_ocr_retry_dpi=_optional_env_int("BANK_PARSER_PAGE_OCR_RETRY_DPI"),
                 backend_startup_timeout=_env_float("BANK_PARSER_BACKEND_STARTUP_TIMEOUT", 180.0),
                 backend_retry_interval=_env_float("BANK_PARSER_BACKEND_RETRY_INTERVAL", 5.0),
             )
