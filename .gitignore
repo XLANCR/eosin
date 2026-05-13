@@ -221,7 +221,7 @@ uv.lock
 /bank statements/
 /bank_statements/
 /bank-statements/
-/load-test-results/
+/load-test-results*/
 /tmp/
 
 # Local OCR/debug artifacts
