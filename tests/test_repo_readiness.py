@@ -68,7 +68,9 @@ def test_env_example_has_modal_defaults() -> None:
     assert "BANK_PARSER_OCR_DOCUMENT_MAX_IMAGES_PER_REQUEST=4" in env_example
     assert "BANK_PARSER_OCR_BATCH_DRAIN_MAX_BATCH_SIZE=96" in env_example
     assert "BANK_PARSER_OCR_BATCH_DRAIN_MAX_WAIT_SECONDS=1.0" in env_example
-    assert "BANK_PARSER_METRICS_PUSH_ENABLE=true" in env_example
+    assert "EOSIN_MODAL_METRICS_PUSH_ENABLE=false" in env_example
+    assert "EOSIN_MODAL_METRICS_PUSH_TRANSPORT=direct" in env_example
+    assert "BANK_PARSER_METRICS_PUSH_ENABLE=false" in env_example
     assert "BANK_PARSER_METRICS_PUSH_TRANSPORT=tailscale-socks5" in env_example
 
 
@@ -278,6 +280,9 @@ def test_modal_image_uses_page_http_default_and_metrics_auth_value() -> None:
     assert '"BANK_PARSER_CAPTURE_RAW_OCR_DEBUG": "true" if CAPTURE_RAW_OCR_DEBUG else "false"' in modal_app
     assert '"BANK_PARSER_OCR_MAX_IMAGE_SIDE": os.getenv("BANK_PARSER_OCR_MAX_IMAGE_SIDE", "3500")' in modal_app
     assert '"BANK_PARSER_OCR_MAX_IMAGE_PIXELS": os.getenv("BANK_PARSER_OCR_MAX_IMAGE_PIXELS", "9000000")' in modal_app
+    assert 'METRICS_PUSH_ENABLE = _env_bool("EOSIN_MODAL_METRICS_PUSH_ENABLE", False)' in modal_app
+    assert '"BANK_PARSER_METRICS_PUSH_ENABLE": "true" if METRICS_PUSH_ENABLE else "false"' in modal_app
+    assert '"BANK_PARSER_METRICS_PUSH_ENABLE": os.getenv("BANK_PARSER_METRICS_PUSH_ENABLE", "false")' not in modal_app
     assert "enable_page_ocr_retry=ENABLE_PAGE_OCR_RETRY" in modal_app
     assert "save_debug_images=SAVE_DEBUG_IMAGES" in modal_app
     assert "capture_raw_ocr_debug=CAPTURE_RAW_OCR_DEBUG" in modal_app
