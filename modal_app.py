@@ -49,7 +49,7 @@ VLLM_MAX_NUM_SEQS = os.getenv("EOSIN_MODAL_VLLM_MAX_NUM_SEQS", "32")
 VLLM_MAX_BATCHED_TOKENS = os.getenv("EOSIN_MODAL_VLLM_MAX_BATCHED_TOKENS", "16384")
 VLLM_SPECULATIVE_CONFIG = os.getenv(
     "EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG",
-    '{"method": "mtp", "num_speculative_tokens": 1}',
+    '{"method": "mtp", "num_speculative_tokens": 2}',
 )
 VLLM_ENABLE_PREFIX_CACHING = _env_bool("EOSIN_MODAL_VLLM_ENABLE_PREFIX_CACHING", True)
 VLLM_KV_CACHE_METRICS = _env_bool("EOSIN_MODAL_VLLM_KV_CACHE_METRICS", True)

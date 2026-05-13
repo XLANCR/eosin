@@ -44,6 +44,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_MEMORY_MIB=32768" in env_example
     assert "EOSIN_MODAL_OCR_PIPELINE_WORKERS=32" in env_example
     assert "EOSIN_MODAL_VLLM_MAX_MODEL_LEN=16384" in env_example
+    assert 'EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG={"method": "mtp", "num_speculative_tokens": 2}' in env_example
     assert "EOSIN_MODAL_VLLM_MAX_NUM_SEQS=32" in env_example
     assert "EOSIN_MODAL_VLLM_MAX_BATCHED_TOKENS=16384" in env_example
     assert "EOSIN_MODAL_VLLM_ENABLE_GPU_SNAPSHOT=false" in env_example
@@ -78,7 +79,7 @@ def test_local_artifacts_are_ignored() -> None:
     gitignore = Path(".gitignore").read_text()
 
     assert "/bank statements" in gitignore
-    assert "/load-test-results/" in gitignore
+    assert "/load-test-results*/" in gitignore
     assert ".env" in gitignore
     assert "!.env.example" in gitignore
 
