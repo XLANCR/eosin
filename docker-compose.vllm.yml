@@ -1,0 +1,78 @@
+services:
+  vllm_api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.vllm
+    container_name: eosin_vllm_api
+    expose:
+      - "8080"
+    ipc: host
+    restart: unless-stopped
+    gpus: all
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    command:
+      - "vllm"
+      - "serve"
+      - "zai-org/GLM-OCR"
+      - "--port"
+      - "8080"
+      - "--dtype"
+      - "bfloat16"
+      - "--kv-cache-dtype"
+      - "fp8_e4m3"
+      - "--trust-remote-code"
+      - "--speculative-config"
+      - '{"method": "mtp", "num_speculative_tokens": 1}'
+      - "--max-model-len"
+      - "32768"
+      - "--gpu-memory-utilization"
+      - "0.65"
+      - "--max-num-seqs"
+      - "16"
+      - "--enable-chunked-prefill"
+      - "--served-model-name"
+      - "default"
+
+  bank_parser_api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.parser
+    container_name: eosin_bank_parser_api
+    depends_on:
+      vllm_api:
+        condition: service_healthy
+    ipc: host
+    restart: unless-stopped
+    gpus: all
+    ports:
+      - "8090:8090"
+    environment:
+      - GLMOCR_OCR_API_HOST=vllm_api
+      - GLMOCR_OCR_API_PORT=8080
+      - GLMOCR_OCR_MODEL=default
+      - GLMOCR_MODE=selfhosted
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - BANK_PARSER_PORT=8090
+      - BANK_PARSER_PARSE_TESTING=false
+      - BANK_PARSER_SAVE_DEBUG_IMAGES=false
+      - BANK_PARSER_OCR_BATCH_SIZE=25
+      - BANK_PARSER_BACKEND_STARTUP_TIMEOUT=180
+      - BANK_PARSER_BACKEND_RETRY_INTERVAL=5
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  huggingface_cache:
