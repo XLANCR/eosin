@@ -201,3 +201,13 @@ pyrightconfig.json
 
 
 # End of https://www.toptal.com/developers/gitignore/api/python,pythonvanilla
+
+# ── Project-specific ──────────────────────────────────────────────────────────
+
+# Bank statement evaluation corpus (large PDF+CSV dataset)
+bank statements/
+
+# Test PDF fixtures (binary, not source)
+test_pdfs/
+
+

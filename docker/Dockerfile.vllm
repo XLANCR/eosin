@@ -1,0 +1,13 @@
+# Use the official vLLM nightly image which has all CUDA dev tools baked in
+FROM vllm/vllm-openai:nightly
+
+# Upgrade transformers to the bleeding edge, as requested
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN pip install --upgrade pip
+RUN pip install --upgrade git+https://github.com/huggingface/transformers.git
+
+WORKDIR /app
+EXPOSE 8080
+
+# Keep the entrypoint empty so we can pass 'vllm serve' from compose easily
+ENTRYPOINT []

@@ -1,0 +1,12 @@
+FROM vllm/vllm-openai:nightly
+
+RUN pip install --upgrade pip
+
+WORKDIR /app
+COPY pyproject.toml README.md /app/
+COPY eosin /app/eosin
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH"
+RUN pip install .
+
+EXPOSE 8090
+ENTRYPOINT ["uvicorn", "eosin.backend.bank_parser_api:app", "--host", "0.0.0.0", "--port", "8090"]

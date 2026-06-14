@@ -1,0 +1,24 @@
+pipeline:
+  maas:
+    enabled: false
+  ocr_api:
+    #api_host: localhost
+    api_host: vllm_api
+    api_port: 8080
+    model: default
+    api_path: /v1/chat/completions
+    verify_ssl: false
+    connection_pool_size: 32
+    request_timeout: 300
+  max_workers: 32
+  page_loader:
+    max_tokens: 7000
+    pdf_dpi: 200
+    task_prompt_mapping:
+      table: "Table Recognition:"
+    pdf_verbose: true
+  logging:
+    level: DEBUG
+  layout:
+    batch_size: 4
+    model_dir: PaddlePaddle/PP-DocLayoutV3_safetensors
