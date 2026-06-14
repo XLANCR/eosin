@@ -116,12 +116,12 @@ image = (
         "pip install --ignore-installed --no-deps blinker glmocr pandas beautifulsoup4",
         "pip install --no-deps accelerate beautifulsoup4 fastapi numpy opencv-python-headless pandas pillow portalocker prometheus-client pydantic pymupdf python-dotenv python-multipart pyyaml requests PySocks sentencepiece tqdm uvicorn eliot 'camelot-py[cv]' liteparse img2table nvidia-ml-py",
     )
-    .add_local_dir("eosin", remote_path="/root/eosin", copy=True)
     .run_commands(
         "pip install --no-cache-dir --force-reinstall 'setuptools<81'",
         "pip install --no-cache-dir --force-reinstall --no-deps 'huggingface-hub==1.13.0'",
         "pip install --no-cache-dir --force-reinstall --no-deps 'transformers==5.6.2'",
     )
+    .add_local_dir("eosin", remote_path="/root/eosin", copy=True)
     .entrypoint([])
     .env(
         {

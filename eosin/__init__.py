@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Cache-bust: evidence-only refactor 2026-06-15
 from importlib import import_module
 from typing import Any
 
