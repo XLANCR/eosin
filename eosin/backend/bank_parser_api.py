@@ -16,13 +16,18 @@ from eosin.backend.bank_parser_service import BankParserResult
 from eosin.backend.metrics import get_metrics_manager
 
 
-def evidence_payload_from_result(result: dict) -> dict:
+def evidence_payload_from_result(result: dict | BankParserResult) -> dict:
     """Transform evidence-only extraction result to the v2 evidence contract.
 
     Per plan.md: eosin returns raw per-page GLM HTML + quality metadata +
     retry/timing diagnostics.  No DataFrame assembly, no column alignment,
     no row repairs.  Almond owns all parser intelligence.
+
+    Accepts both dict payloads and BankParserResult objects (from Modal-returned
+    results that may not have been serialized to dict).
     """
+    if not isinstance(result, dict):
+        result = result.to_payload()
     pages = []
     for item in result.get("pages", []):
         pages.append({
