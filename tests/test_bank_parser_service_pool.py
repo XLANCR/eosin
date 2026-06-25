@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import threading
 import time
 from pathlib import Path
@@ -54,6 +55,23 @@ class FakeDirectOCRParser(FakeParser):
         ], {
             "task_count": float(len(ocr_images)),
             "success_count": float(len(ocr_images)),
+        }
+
+    def _evaluate_page_ocr_result(
+        self,
+        *,
+        page_idx: int,
+        html_content: str,
+        expected_headers,
+        pass_label: str,
+    ):
+        assert html_content
+        assert expected_headers is None
+        assert pass_label == "evidence"
+        return {
+            "quality_score": 91 - page_idx,
+            "suspicious": page_idx > 0,
+            "reasons": ["low_quality"] if page_idx > 0 else [],
         }
 
 
@@ -112,6 +130,11 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
 
     monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
     monkeypatch.setattr("eosin.backend.bank_parser_service.fitz.open", lambda _path: FakeDocument())
+    clock = iter([100.0, 101.0, 101.25, 102.0, 102.75, 103.0])
+    monkeypatch.setattr(
+        "eosin.backend.bank_parser_service.time.time",
+        lambda: next(clock),
+    )
 
     service = BankParserService(parser_pool_size=1)
     try:
@@ -126,12 +149,27 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
 
     assert payload["source_pdf"] == "statement.pdf"
     assert payload["page_count"] == 3
-    assert [
-        (page["page_number"], page["raw_html"])
-        for page in payload["pages"]
-    ] == [
-        (1, "<table><tr><td>page-1</td></tr></table>"),
-        (3, "<table><tr><td>page-3</td></tr></table>"),
+    assert payload["pages"] == [
+        {
+            "page_number": 1,
+            "raw_html": "<table><tr><td>page-1</td></tr></table>",
+            "quality_score": 91,
+            "suspicious": False,
+            "reasons": [],
+            "provider": "eosin_glm",
+            "model": "default",
+            "timing_ms": 750.0,
+        },
+        {
+            "page_number": 3,
+            "raw_html": "<table><tr><td>page-3</td></tr></table>",
+            "quality_score": 89,
+            "suspicious": True,
+            "reasons": ["low_quality"],
+            "provider": "eosin_glm",
+            "model": "default",
+            "timing_ms": 750.0,
+        },
     ]
     assert payload["ocr_metrics"]["task_count"] == 2.0
 
@@ -165,3 +203,76 @@ def test_evidence_payload_preserves_direct_extraction_page_contract() -> None:
     assert payload["pages"] == direct_payload["pages"]
     assert payload["timings"] == direct_payload["timings"]
     assert payload["ocr_metrics"] == direct_payload["ocr_metrics"]
+
+
+def test_http_and_modal_rpc_return_identical_shaped_evidence_payloads() -> None:
+    direct_payload = {
+        "source_pdf": "statement.pdf",
+        "page_count": 1,
+        "pages": [
+            {
+                "page_number": 1,
+                "raw_html": "<table><tr><td>page-1</td></tr></table>",
+                "quality_score": 91,
+                "suspicious": True,
+                "reasons": ["low_quality"],
+                "provider": "eosin_glm",
+                "model": "test-model",
+                "timing_ms": 12.5,
+            }
+        ],
+        "timings": {"service_total": 0.3},
+        "ocr_metrics": {"task_count": 1.0},
+    }
+
+    expected_payload = evidence_payload_from_result(direct_payload)
+
+    api_tree = ast.parse(Path("eosin/backend/bank_parser_api.py").read_text())
+    create_app_node = next(
+        node
+        for node in api_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create_app"
+    )
+    http_method = next(
+        node
+        for node in create_app_node.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "extract_bank_statement_evidence"
+    )
+    http_return = next(
+        node
+        for node in ast.walk(http_method)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "evidence_payload_from_result"
+    )
+
+    modal_tree = ast.parse(Path("modal_app.py").read_text())
+    modal_class = next(
+        node
+        for node in modal_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BankParserModalApp"
+    )
+    modal_method = next(
+        node
+        for node in modal_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "extract_evidence"
+    )
+    modal_return = next(
+        node
+        for node in modal_method.body
+        if isinstance(node, ast.Return)
+    )
+
+    assert expected_payload["pages"] == direct_payload["pages"]
+    assert isinstance(http_return.value, ast.Call)
+    assert isinstance(http_return.value.func, ast.Name)
+    assert http_return.value.func.id == "evidence_payload_from_result"
+    assert isinstance(modal_return.value, ast.Call)
+    assert isinstance(modal_return.value.func, ast.Name)
+    assert modal_return.value.func.id == "evidence_payload_from_result"
+    direct_call = modal_return.value.args[0]
+    assert isinstance(direct_call, ast.Call)
+    assert isinstance(direct_call.func, ast.Attribute)
+    assert direct_call.func.attr == "extract_glm_page_html_bytes"

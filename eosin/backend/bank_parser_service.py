@@ -289,6 +289,7 @@ class BankParserService:
                     "reasons": page_quality.get(page_idx, {}).get("reasons", []),
                     "provider": "eosin_glm",
                     "model": os.getenv("GLMOCR_OCR_MODEL", "default"),
+                    "timing_ms": round(ocr_seconds * 1000.0, 3),
                 }
                 for page_idx, html in sorted(ocr_results, key=lambda item: item[0])
             ]
