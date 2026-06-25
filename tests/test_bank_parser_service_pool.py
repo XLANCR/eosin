@@ -158,7 +158,7 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
             "reasons": [],
             "provider": "eosin_glm",
             "model": "default",
-            "timing_ms": 750.0,
+            "timing_ms": 0.0,
         },
         {
             "page_number": 3,
@@ -168,9 +168,10 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
             "reasons": ["low_quality"],
             "provider": "eosin_glm",
             "model": "default",
-            "timing_ms": 750.0,
+            "timing_ms": 0.0,
         },
     ]
+    assert payload["timings"]["ocr_pages"] == 0.75
     assert payload["ocr_metrics"]["task_count"] == 2.0
 
 
