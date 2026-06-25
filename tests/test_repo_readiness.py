@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -453,3 +454,25 @@ def test_modal_asgi_app_requires_proxy_auth() -> None:
 
     assert 'REQUIRES_PROXY_AUTH = _env_bool("EOSIN_MODAL_REQUIRES_PROXY_AUTH", True)' in modal_app
     assert "@modal.asgi_app(label=WEB_LABEL, requires_proxy_auth=REQUIRES_PROXY_AUTH)" in modal_app
+
+
+def test_modal_extract_evidence_uses_direct_evidence_only_service_path() -> None:
+    tree = ast.parse(Path("modal_app.py").read_text())
+    modal_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BankParserModalApp"
+    )
+    method = next(
+        node
+        for node in modal_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "extract_evidence"
+    )
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "extract_glm_page_html_bytes" in called_attributes
+    assert "parse_pdf_bytes" not in called_attributes

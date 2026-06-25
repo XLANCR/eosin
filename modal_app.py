@@ -454,7 +454,9 @@ class BankParserModalApp:
     def extract_evidence(self, filename: str, pdf_bytes: bytes) -> dict:
         from eosin.backend.bank_parser_api import evidence_payload_from_result
 
-        return evidence_payload_from_result(self.service.parse_pdf_bytes(filename, pdf_bytes))
+        return evidence_payload_from_result(
+            self.service.extract_glm_page_html_bytes(filename, pdf_bytes)
+        )
 
     @modal.method()
     def extract_glm_page_html(

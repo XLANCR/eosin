@@ -28,22 +28,43 @@ def evidence_payload_from_result(result: dict | BankParserResult) -> dict:
     """
     if not isinstance(result, dict):
         result = result.to_payload()
+    source_pages = result.get("pages")
+    if source_pages is None:
+        source_pages = result.get("debug", {}).get("page_ocr", [])
     pages = []
-    for item in result.get("pages", []):
-        pages.append({
-            "page_number": int(item.get("page_number", 0)),
+    for item in source_pages:
+        page_number = item.get("page_number")
+        if page_number is None:
+            page_number = int(item.get("page_index", -1)) + 1
+        page = {
+            "page_number": int(page_number),
             "raw_html": str(item.get("raw_html", "")),
             "quality_score": int(item.get("quality_score", 50)),
             "suspicious": bool(item.get("suspicious", True)),
             "reasons": [str(r) for r in item.get("reasons", [])],
             "provider": str(item.get("provider", "eosin_glm")),
             "model": str(item.get("model", os.getenv("GLMOCR_OCR_MODEL", "default"))),
-            "timing_ms": 0.0,
-        })
+            "timing_ms": float(item.get("timing_ms", 0.0)),
+        }
+        if "headers" in item or "raw_headers" in item:
+            page["headers"] = [
+                str(header)
+                for header in item.get("headers", item.get("raw_headers", []))
+            ]
+        if "row_count" in item:
+            page["row_count"] = int(item["row_count"])
+        pages.append(page)
 
     return {
         "source_pdf": str(result.get("source_pdf", "")),
         "page_count": int(result.get("page_count", 0)),
+        "pages_with_tables": [
+            int(page_number)
+            for page_number in result.get(
+                "pages_with_tables",
+                [page["page_number"] for page in pages if page["raw_html"]],
+            )
+        ],
         "pages": pages,
         "timings": result.get("timings", {}),
         "ocr_metrics": result.get("ocr_metrics", {}),

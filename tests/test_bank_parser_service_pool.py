@@ -8,6 +8,7 @@ import pandas as pd
 from PIL import Image
 
 from eosin.backend.bank_parser_service import BankParserService
+from eosin.backend.bank_parser_api import evidence_payload_from_result
 
 
 class FakeParser:
@@ -125,8 +126,42 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
 
     assert payload["source_pdf"] == "statement.pdf"
     assert payload["page_count"] == 3
-    assert payload["pages"] == [
-        {"page_number": 1, "raw_html": "<table><tr><td>page-1</td></tr></table>"},
-        {"page_number": 3, "raw_html": "<table><tr><td>page-3</td></tr></table>"},
+    assert [
+        (page["page_number"], page["raw_html"])
+        for page in payload["pages"]
+    ] == [
+        (1, "<table><tr><td>page-1</td></tr></table>"),
+        (3, "<table><tr><td>page-3</td></tr></table>"),
     ]
     assert payload["ocr_metrics"]["task_count"] == 2.0
+
+
+def test_evidence_payload_preserves_direct_extraction_page_contract() -> None:
+    direct_payload = {
+        "source_pdf": "statement.pdf",
+        "page_count": 1,
+        "pages": [
+            {
+                "page_number": 1,
+                "raw_html": "<table><tr><td>page-1</td></tr></table>",
+                "quality_score": 91,
+                "suspicious": False,
+                "reasons": [],
+                "provider": "eosin_glm",
+                "model": "test-model",
+                "timing_ms": 12.5,
+            }
+        ],
+        "timings": {
+            "render_pages": 0.1,
+            "ocr_pages": 0.2,
+            "service_total": 0.3,
+        },
+        "ocr_metrics": {"task_count": 1.0},
+    }
+
+    payload = evidence_payload_from_result(direct_payload)
+
+    assert payload["pages"] == direct_payload["pages"]
+    assert payload["timings"] == direct_payload["timings"]
+    assert payload["ocr_metrics"] == direct_payload["ocr_metrics"]
