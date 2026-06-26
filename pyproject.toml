@@ -10,6 +10,7 @@ python = "^3.11"
 pdfplumber = "^0.11.4"
 pandas = "^2.2.3"
 dateparser = "^1.2.0"
+transformers = ">=5.6.0"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -22,4 +23,3 @@ ruff = "^0.6.9"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-

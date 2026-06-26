@@ -256,6 +256,9 @@ class MetricsManager:
             ocr_metrics = debug.get("ocr_metrics")
             if isinstance(ocr_metrics, dict):
                 self._observe_ocr_metrics(ocr_metrics)
+        ocr_metrics = result_payload.get("ocr_metrics")
+        if isinstance(ocr_metrics, dict):
+            self._observe_ocr_metrics(ocr_metrics)
 
     def track_request_failure(self, reason: str) -> None:
         REQUESTS_TOTAL.labels(status="failure").inc()

@@ -6,6 +6,12 @@
 
 In biology, _eosin_ is a dye that helps differentiate cells under a microscope. In a similar way, this package is designed to differentiate and extract data from the messy structures of bank statements. While creating a parser for a single, specific statement format is easy, Eosin is built to handle the hardest version of the problem—working with all kinds of inconsistent formats and messy data.
 
+## Production Modal endpoint
+
+Use the deployed Modal web endpoint as `https://<workspace>--bank-parser.modal.run`. When proxy auth is enabled, callers must send `Modal-Key` and `Modal-Secret`; Modal reports this as `requires_proxy_auth`.
+
+Production secrets are provisioned with `modal secret create eosin-tailscale` for Tailscale access and `modal secret create eosin-metrics-push` for push metrics credentials. pull-based monitoring is intentionally disabled for the Modal worker; use the configured push endpoint instead.
+
 ### What Makes Bank Statements So Hard to Parse?
 
 Bank statements are notorious for being a nightmare to automate due to:

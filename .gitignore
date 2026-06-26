@@ -207,7 +207,11 @@ pyrightconfig.json
 # Bank statement evaluation corpus (large PDF+CSV dataset)
 bank statements/
 
+# Local benchmark/load-test outputs
+/load-test-results*/
+
+# Keep the checked-in env template visible.
+!.env.example
+
 # Test PDF fixtures (binary, not source)
 test_pdfs/
-
-

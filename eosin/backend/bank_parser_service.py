@@ -62,6 +62,7 @@ class BankParserService:
         capture_raw_ocr_debug: Optional[bool] = None,
         page_ocr_retry_dpi: Optional[int] = None,
         parser_pool_size: int = 1,
+        parser_pool_wait_timeout: float = 30.0,
         backend_startup_timeout: float = 180.0,
         backend_retry_interval: float = 5.0,
     ):
@@ -103,8 +104,10 @@ class BankParserService:
         self._layout_max_concurrency = max(1, int(layout_max_concurrency or 1))
         self._layout_guard = threading.BoundedSemaphore(self._layout_max_concurrency)
         self._parser_pool_size = max(1, int(parser_pool_size))
+        self._parser_pool_wait_timeout = max(0.01, float(parser_pool_wait_timeout))
         self._parser_pool: queue.Queue[impl.BankStatementParser] = queue.Queue(maxsize=self._parser_pool_size)
         self._parsers: list[impl.BankStatementParser] = []
+        self._closed = False
         self._apply_impl_settings()
         self._build_parser_pool()
 
@@ -137,11 +140,19 @@ class BankParserService:
 
     @contextmanager
     def _borrow_parser(self) -> Iterator[impl.BankStatementParser]:
-        parser = self._parser_pool.get()
+        try:
+            parser = self._parser_pool.get(timeout=self._parser_pool_wait_timeout)
+        except queue.Empty as exc:
+            raise TimeoutError(
+                f"Timed out waiting for parser pool slot after {self._parser_pool_wait_timeout:.2f}s"
+            ) from exc
         try:
             yield parser
         finally:
             self._parser_pool.put(parser)
+
+    def is_ready(self) -> bool:
+        return not self._closed and bool(self._parsers) and self._parser_pool.qsize() > 0
 
     @staticmethod
     def _json_safe_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -308,5 +319,6 @@ class BankParserService:
             temp_path.unlink(missing_ok=True)
 
     def close(self) -> None:
+        self._closed = True
         for parser in self._parsers:
             parser.close()

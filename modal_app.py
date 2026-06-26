@@ -19,6 +19,20 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return int(value)
+
+
+def _bounded_modal_inputs() -> tuple[int, int]:
+    safe_max_inputs = 4
+    max_inputs = max(1, min(_env_int("EOSIN_MODAL_MAX_INPUTS", safe_max_inputs), safe_max_inputs))
+    target_inputs = max(1, min(_env_int("EOSIN_MODAL_TARGET_INPUTS", max_inputs), max_inputs))
+    return max_inputs, target_inputs
+
+
 APP_NAME = os.getenv("EOSIN_MODAL_APP_NAME", "eosin-glm-ocr")
 WEB_LABEL = os.getenv("EOSIN_MODAL_WEB_LABEL", "bank-parser")
 REQUIRES_PROXY_AUTH = _env_bool("EOSIN_MODAL_REQUIRES_PROXY_AUTH", True)
@@ -32,8 +46,7 @@ if MIN_CONTAINERS > 0 and not ALLOW_ALWAYS_ON:
         "EOSIN_MODAL_MIN_CONTAINERS keeps paid GPU containers running. "
         "Set EOSIN_MODAL_ALLOW_ALWAYS_ON=true only if you intentionally want an always-on deployment."
     )
-MAX_INPUTS = int(os.getenv("EOSIN_MODAL_MAX_INPUTS", "64"))
-TARGET_INPUTS = int(os.getenv("EOSIN_MODAL_TARGET_INPUTS", str(MAX_INPUTS)))
+MAX_INPUTS, TARGET_INPUTS = _bounded_modal_inputs()
 SCALEDOWN_WINDOW_SECONDS = int(os.getenv("EOSIN_MODAL_SCALEDOWN_WINDOW", "120"))
 FUNCTION_TIMEOUT_SECONDS = int(os.getenv("EOSIN_MODAL_TIMEOUT", "1800"))
 STARTUP_TIMEOUT_SECONDS = int(os.getenv("EOSIN_MODAL_STARTUP_TIMEOUT", "900"))
@@ -343,6 +356,7 @@ class BankParserModalApp:
             page_ocr_retry_dpi=PAGE_OCR_RETRY_DPI,
             capture_raw_ocr_debug=CAPTURE_RAW_OCR_DEBUG,
             parser_pool_size=PARSER_POOL_SIZE,
+            parser_pool_wait_timeout=float(os.getenv("BANK_PARSER_POOL_WAIT_TIMEOUT", "30")),
             backend_startup_timeout=60.0,
             backend_retry_interval=1.0,
         )
@@ -452,8 +466,9 @@ class BankParserModalApp:
 
     @modal.method()
     def extract_evidence(self, filename: str, pdf_bytes: bytes) -> dict:
-        from eosin.backend.bank_parser_api import evidence_payload_from_result
+        from eosin.backend.bank_parser_api import evidence_payload_from_result, validate_pdf_upload
 
+        validate_pdf_upload(filename, pdf_bytes)
         return evidence_payload_from_result(
             self.service.extract_glm_page_html_bytes(filename, pdf_bytes)
         )
@@ -466,6 +481,9 @@ class BankParserModalApp:
         page_numbers: list[int] | None = None,
         dpi: int | None = None,
     ) -> dict:
+        from eosin.backend.bank_parser_api import validate_pdf_upload
+
+        validate_pdf_upload(filename, pdf_bytes)
         return self.service.extract_glm_page_html_bytes(
             filename,
             pdf_bytes,

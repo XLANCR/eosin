@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from PIL import Image
 
 from eosin.backend.bank_parser_service import BankParserService
@@ -109,6 +110,48 @@ def test_bank_parser_service_uses_parser_pool_for_concurrent_requests(monkeypatc
         service.close()
 
     assert all(parser.closed for parser in created)
+
+
+def test_borrow_parser_times_out_when_pool_is_saturated(monkeypatch) -> None:
+    created: list[FakeParser] = []
+
+    def fake_build_parser(self):
+        parser = FakeParser(len(created) + 1, threading.Barrier(1))
+        created.append(parser)
+        return parser
+
+    monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
+    service = BankParserService(parser_pool_size=1, parser_pool_wait_timeout=0.01)
+    borrowed = service._parser_pool.get_nowait()
+    try:
+        with pytest.raises(TimeoutError, match="parser pool"):
+            with service._borrow_parser():
+                raise AssertionError("should not acquire parser")
+    finally:
+        service._parser_pool.put(borrowed)
+        service.close()
+
+
+def test_service_readiness_reflects_saturation_and_close(monkeypatch) -> None:
+    created: list[FakeParser] = []
+
+    def fake_build_parser(self):
+        parser = FakeParser(len(created) + 1, threading.Barrier(1))
+        created.append(parser)
+        return parser
+
+    monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
+    service = BankParserService(parser_pool_size=1)
+    assert service.is_ready() is True
+
+    borrowed = service._parser_pool.get_nowait()
+    try:
+        assert service.is_ready() is False
+    finally:
+        service._parser_pool.put(borrowed)
+
+    service.close()
+    assert service.is_ready() is False
 
 
 def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch, tmp_path) -> None:
@@ -240,13 +283,12 @@ def test_http_and_modal_rpc_return_identical_shaped_evidence_payloads() -> None:
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "extract_bank_statement_evidence"
     )
-    http_return = next(
+    http_payload_call = next(
         node
         for node in ast.walk(http_method)
-        if isinstance(node, ast.Return)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "evidence_payload_from_result"
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "evidence_payload_from_result"
     )
 
     modal_tree = ast.parse(Path("modal_app.py").read_text())
@@ -267,9 +309,7 @@ def test_http_and_modal_rpc_return_identical_shaped_evidence_payloads() -> None:
     )
 
     assert expected_payload["pages"] == direct_payload["pages"]
-    assert isinstance(http_return.value, ast.Call)
-    assert isinstance(http_return.value.func, ast.Name)
-    assert http_return.value.func.id == "evidence_payload_from_result"
+    assert isinstance(http_payload_call, ast.Call)
     assert isinstance(modal_return.value, ast.Call)
     assert isinstance(modal_return.value.func, ast.Name)
     assert modal_return.value.func.id == "evidence_payload_from_result"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import importlib.util
 import sys
@@ -7,7 +8,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
 load_test_spec = importlib.util.spec_from_file_location(
     "load_test_bank_parser",
@@ -85,8 +85,8 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_ALLOW_ALWAYS_ON=false" in env_example
     assert "EOSIN_MODAL_MAX_CONTAINERS=3" in env_example
     assert "EOSIN_MODAL_REQUIRES_PROXY_AUTH=true" in env_example
-    assert "EOSIN_MODAL_MAX_INPUTS=64" in env_example
-    assert "EOSIN_MODAL_TARGET_INPUTS=64" in env_example
+    assert "EOSIN_MODAL_MAX_INPUTS=4" in env_example
+    assert "EOSIN_MODAL_TARGET_INPUTS=4" in env_example
     assert "EOSIN_MODAL_SCALEDOWN_WINDOW=120" in env_example
     assert "EOSIN_MODAL_STARTUP_TIMEOUT=900" in env_example
     assert "EOSIN_MODAL_MEMORY_MIB=32768" in env_example
@@ -112,6 +112,9 @@ def test_env_example_has_modal_defaults() -> None:
     assert "BANK_PARSER_PAGE_OCR_RETRY_ALL=false" in env_example
     assert "BANK_PARSER_PAGE_OCR_RETRY_DPI=300" in env_example
     assert "BANK_PARSER_CAPTURE_RAW_OCR_DEBUG=false" in env_example
+    assert "BANK_PARSER_MAX_UPLOAD_BYTES=25000000" in env_example
+    assert "BANK_PARSER_MAX_PAGES=64" in env_example
+    assert "BANK_PARSER_POOL_WAIT_TIMEOUT=30" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_SIDE=3500" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_PIXELS=9000000" in env_example
     assert "BANK_PARSER_OCR_DOCUMENT_MAX_TOKENS_CAP=4096" in env_example
@@ -133,7 +136,7 @@ def test_modal_image_uses_nested_eosin_package_path() -> None:
 def test_local_artifacts_are_ignored() -> None:
     gitignore = Path(".gitignore").read_text()
 
-    assert "/bank statements" in gitignore
+    assert "bank statements/" in gitignore
     assert "/load-test-results*/" in gitignore
     assert ".env" in gitignore
     assert "!.env.example" in gitignore
@@ -369,7 +372,7 @@ def test_modal_image_reinstalls_stable_transformers_last() -> None:
     assert "pip install --no-cache-dir --force-reinstall --no-deps 'transformers==5.6.2'" in modal_app
     assert "pip install --ignore-installed --no-deps blinker glmocr pandas beautifulsoup4" in modal_app
     assert "pip install --ignore-installed blinker 'glmocr[selfhosted,server]' pandas beautifulsoup4" not in modal_app
-    assert '"transformers>=5.6.0"' in pyproject
+    assert 'transformers = ">=5.6.0"' in pyproject
     assert '"HF_XET_HIGH_PERFORMANCE": os.getenv("EOSIN_MODAL_HF_XET_HIGH_PERFORMANCE", "1")' in modal_app
     assert '"TORCHINDUCTOR_COMPILE_THREADS": os.getenv("EOSIN_MODAL_TORCHINDUCTOR_COMPILE_THREADS", "1")' in modal_app
     assert '"TORCH_NCCL_ENABLE_MONITORING": os.getenv("EOSIN_MODAL_TORCH_NCCL_ENABLE_MONITORING", "0")' in modal_app
@@ -380,7 +383,7 @@ def test_modal_image_reinstalls_stable_transformers_last() -> None:
 def test_modal_image_uses_page_http_default_and_metrics_auth_value() -> None:
     modal_app = Path("modal_app.py").read_text()
 
-    assert 'OCR_BACKEND_MODE = os.getenv("EOSIN_MODAL_BANK_PARSER_OCR_BACKEND_MODE", "page_http")' in modal_app
+    assert 'OCR_BACKEND_MODE = os.getenv("EOSIN_MODAL_BANK_PARSER_OCR_BACKEND_MODE", "page_batch")' in modal_app
     assert 'ENABLE_PAGE_OCR_RETRY = os.getenv("BANK_PARSER_ENABLE_PAGE_OCR_RETRY", "false").lower() == "true"' in modal_app
     assert '"BANK_PARSER_ENABLE_PAGE_OCR_RETRY": "true" if ENABLE_PAGE_OCR_RETRY else "false"' in modal_app
     assert '"BANK_PARSER_SAVE_DEBUG_IMAGES": "true" if SAVE_DEBUG_IMAGES else "false"' in modal_app
@@ -439,14 +442,29 @@ def test_debug_mode_saves_all_header_stitching_artifacts() -> None:
 def test_metrics_endpoint_is_exposed(monkeypatch) -> None:
     pytest.importorskip("prometheus_client")
     monkeypatch.setenv("BANK_PARSER_METRICS_ENABLE_VLLM_PROXY", "false")
+    monkeypatch.setattr(
+        "eosin.backend.bank_parser_api.get_metrics_manager",
+        lambda: _NoopMetricsManager(),
+    )
 
     from eosin.backend.bank_parser_api import create_app
 
-    client = TestClient(create_app(service=object()))
-    response = client.get("/metrics")
+    app = create_app(service=object())
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", None) == "/metrics")
+    response = asyncio.run(endpoint())
 
     assert response.status_code == 200
-    assert "eosin_container_info" in response.text
+    assert "eosin_container_info" in response.body.decode()
+
+
+class _NoopMetricsManager:
+    def start_background_samplers(self) -> None:
+        return None
+
+    def render_metrics(self):
+        from eosin.backend.metrics import get_metrics_manager
+
+        return get_metrics_manager().render_metrics()
 
 
 def test_modal_asgi_app_requires_proxy_auth() -> None:
@@ -454,6 +472,15 @@ def test_modal_asgi_app_requires_proxy_auth() -> None:
 
     assert 'REQUIRES_PROXY_AUTH = _env_bool("EOSIN_MODAL_REQUIRES_PROXY_AUTH", True)' in modal_app
     assert "@modal.asgi_app(label=WEB_LABEL, requires_proxy_auth=REQUIRES_PROXY_AUTH)" in modal_app
+
+
+def test_modal_concurrency_is_bounded_to_measured_capacity() -> None:
+    modal_app = Path("modal_app.py").read_text()
+
+    assert "def _bounded_modal_inputs() -> tuple[int, int]:" in modal_app
+    assert "safe_max_inputs = 4" in modal_app
+    assert 'MAX_INPUTS, TARGET_INPUTS = _bounded_modal_inputs()' in modal_app
+    assert 'min(_env_int("EOSIN_MODAL_TARGET_INPUTS", max_inputs), max_inputs)' in modal_app
 
 
 def test_modal_extract_evidence_uses_direct_evidence_only_service_path() -> None:
@@ -476,3 +503,27 @@ def test_modal_extract_evidence_uses_direct_evidence_only_service_path() -> None
 
     assert "extract_glm_page_html_bytes" in called_attributes
     assert "parse_pdf_bytes" not in called_attributes
+
+
+def test_modal_rpc_evidence_methods_validate_pdf_payloads() -> None:
+    tree = ast.parse(Path("modal_app.py").read_text())
+    modal_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BankParserModalApp"
+    )
+
+    for method_name in ("extract_evidence", "extract_glm_page_html"):
+        method = next(
+            node
+            for node in modal_class.body
+            if isinstance(node, ast.FunctionDef) and node.name == method_name
+        )
+        calls = [
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "validate_pdf_upload"
+        ]
+        assert calls, method_name

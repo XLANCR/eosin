@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
@@ -92,6 +93,68 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw)
+
+
+def validate_pdf_upload(filename: str, pdf_bytes: bytes) -> int:
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
+
+    max_upload_bytes = _env_int("BANK_PARSER_MAX_UPLOAD_BYTES", 25_000_000)
+    if len(pdf_bytes) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum size")
+
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="uploaded file must be a valid PDF")
+
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+            page_count = int(document.page_count)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="uploaded file must be a valid PDF") from exc
+
+    max_pages = _env_int("BANK_PARSER_MAX_PAGES", 64)
+    if page_count > max_pages:
+        raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum page count")
+    return page_count
+
+
+async def read_limited_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
+    filename = file.filename or ""
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
+
+    max_upload_bytes = _env_int("BANK_PARSER_MAX_UPLOAD_BYTES", 25_000_000)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(min(1024 * 1024, max_upload_bytes + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_upload_bytes:
+            raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum size")
+        chunks.append(chunk)
+    return filename, b"".join(chunks)
+
+
+def http_exception_for_timeout(exc: TimeoutError) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(exc))
+
+
+def readiness_payload(service: object) -> dict:
+    is_ready = True
+    if hasattr(service, "is_ready"):
+        is_ready = bool(service.is_ready())
+    if not is_ready:
+        raise HTTPException(status_code=503, detail={"status": "unavailable"})
+    return {"status": "ok"}
+
+
 def create_app(service: Optional[BankParserService] = None) -> FastAPI:
     app = FastAPI()
     app.state.bank_parser_service = service
@@ -130,6 +193,7 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
                 enable_page_ocr_retry=_env_flag("BANK_PARSER_ENABLE_PAGE_OCR_RETRY", impl.ENABLE_PAGE_OCR_RETRY),
                 capture_raw_ocr_debug=_env_flag("BANK_PARSER_CAPTURE_RAW_OCR_DEBUG", impl.CAPTURE_RAW_OCR_DEBUG),
                 page_ocr_retry_dpi=_optional_env_int("BANK_PARSER_PAGE_OCR_RETRY_DPI"),
+                parser_pool_wait_timeout=_env_float("BANK_PARSER_POOL_WAIT_TIMEOUT", 30.0),
                 backend_startup_timeout=_env_float("BANK_PARSER_BACKEND_STARTUP_TIMEOUT", 180.0),
                 backend_retry_interval=_env_float("BANK_PARSER_BACKEND_RETRY_INTERVAL", 5.0),
             )
@@ -138,11 +202,8 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
 
     @app.post("/parse/bank-statement")
     async def parse_bank_statement(file: UploadFile = File(...)):
-        filename = file.filename or ""
-        if not filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
-
-        pdf_bytes = await file.read()
+        filename, pdf_bytes = await read_limited_pdf_upload(file)
+        validate_pdf_upload(filename, pdf_bytes)
         metrics_manager = app.state.metrics_manager
         metrics_manager.track_request_started(len(pdf_bytes))
         started_at = time.perf_counter()
@@ -155,7 +216,7 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
             return result
         except TimeoutError as exc:
             metrics_manager.track_request_failure("timeout")
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise http_exception_for_timeout(exc) from exc
         except Exception:
             metrics_manager.track_request_failure("exception")
             raise
@@ -174,22 +235,40 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
         It does NOT run DataFrame assembly, column alignment, or any row
         repairs.  Almond owns all parser intelligence.
         """
-        filename = file.filename or ""
-        if not filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
-
-        pdf_bytes = await file.read()
+        filename, pdf_bytes = await read_limited_pdf_upload(file)
+        validate_pdf_upload(filename, pdf_bytes)
+        metrics_manager = app.state.metrics_manager
+        metrics_manager.track_request_started(len(pdf_bytes))
+        started_at = time.perf_counter()
         try:
             result = await run_in_threadpool(
                 lambda: get_service().extract_glm_page_html_bytes(filename, pdf_bytes)
             )
-            return evidence_payload_from_result(result)
+            payload = evidence_payload_from_result(result)
+            metrics_manager.track_request_success(payload)
+            return payload
         except TimeoutError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            metrics_manager.track_request_failure("timeout")
+            raise http_exception_for_timeout(exc) from exc
+        except Exception:
+            metrics_manager.track_request_failure("exception")
+            raise
+        finally:
+            metrics_manager.track_request_finished(time.perf_counter() - started_at)
+            metrics_manager.schedule_push()
 
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready():
+        try:
+            return readiness_payload(get_service())
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail={"status": "unavailable"}) from exc
 
     @app.get("/metrics")
     async def metrics():
