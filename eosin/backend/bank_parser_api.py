@@ -93,20 +93,9 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    return int(raw)
-
-
 def validate_pdf_upload(filename: str, pdf_bytes: bytes) -> int:
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
-
-    max_upload_bytes = _env_int("BANK_PARSER_MAX_UPLOAD_BYTES", 25_000_000)
-    if len(pdf_bytes) > max_upload_bytes:
-        raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum size")
 
     if not pdf_bytes.startswith(b"%PDF-"):
         raise HTTPException(status_code=400, detail="uploaded file must be a valid PDF")
@@ -117,27 +106,19 @@ def validate_pdf_upload(filename: str, pdf_bytes: bytes) -> int:
     except Exception as exc:
         raise HTTPException(status_code=400, detail="uploaded file must be a valid PDF") from exc
 
-    max_pages = _env_int("BANK_PARSER_MAX_PAGES", 64)
-    if page_count > max_pages:
-        raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum page count")
     return page_count
 
 
-async def read_limited_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
+async def read_pdf_upload(file: UploadFile) -> tuple[str, bytes]:
     filename = file.filename or ""
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="uploaded file must be a PDF")
 
-    max_upload_bytes = _env_int("BANK_PARSER_MAX_UPLOAD_BYTES", 25_000_000)
     chunks: list[bytes] = []
-    total = 0
     while True:
-        chunk = await file.read(min(1024 * 1024, max_upload_bytes + 1))
+        chunk = await file.read(1024 * 1024)
         if not chunk:
             break
-        total += len(chunk)
-        if total > max_upload_bytes:
-            raise HTTPException(status_code=413, detail="uploaded PDF exceeds maximum size")
         chunks.append(chunk)
     return filename, b"".join(chunks)
 
@@ -202,7 +183,7 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
 
     @app.post("/parse/bank-statement")
     async def parse_bank_statement(file: UploadFile = File(...)):
-        filename, pdf_bytes = await read_limited_pdf_upload(file)
+        filename, pdf_bytes = await read_pdf_upload(file)
         validate_pdf_upload(filename, pdf_bytes)
         metrics_manager = app.state.metrics_manager
         metrics_manager.track_request_started(len(pdf_bytes))
@@ -235,7 +216,7 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
         It does NOT run DataFrame assembly, column alignment, or any row
         repairs.  Almond owns all parser intelligence.
         """
-        filename, pdf_bytes = await read_limited_pdf_upload(file)
+        filename, pdf_bytes = await read_pdf_upload(file)
         validate_pdf_upload(filename, pdf_bytes)
         metrics_manager = app.state.metrics_manager
         metrics_manager.track_request_started(len(pdf_bytes))

@@ -33,15 +33,14 @@ class FakeService:
         return self.ready
 
 
-def test_validate_pdf_upload_rejects_upload_larger_than_limit(monkeypatch) -> None:
+def test_validate_pdf_upload_ignores_retired_byte_limit(monkeypatch) -> None:
     from eosin.backend.bank_parser_api import validate_pdf_upload
 
     monkeypatch.setenv("BANK_PARSER_MAX_UPLOAD_BYTES", "12")
+    payload = _minimal_pdf(page_count=2)
 
-    with pytest.raises(HTTPException) as exc_info:
-        validate_pdf_upload("statement.pdf", b"%PDF-" + (b"x" * 20))
-
-    assert exc_info.value.status_code == 413
+    assert len(payload) > 12
+    assert validate_pdf_upload("statement.pdf", payload) == 2
 
 
 def test_validate_pdf_upload_rejects_non_pdf_signature() -> None:
@@ -54,20 +53,17 @@ def test_validate_pdf_upload_rejects_non_pdf_signature() -> None:
     assert "valid PDF" in exc_info.value.detail
 
 
-def test_validate_pdf_upload_rejects_pdf_over_page_limit(monkeypatch) -> None:
+def test_validate_pdf_upload_ignores_retired_page_limit(monkeypatch) -> None:
     from eosin.backend.bank_parser_api import validate_pdf_upload
 
     monkeypatch.setenv("BANK_PARSER_MAX_PAGES", "1")
 
-    with pytest.raises(HTTPException) as exc_info:
-        validate_pdf_upload("statement.pdf", _minimal_pdf(page_count=2))
-
-    assert exc_info.value.status_code == 413
+    assert validate_pdf_upload("statement.pdf", _minimal_pdf(page_count=2)) == 2
 
 
-def test_read_limited_pdf_upload_rejects_before_unbounded_read(monkeypatch) -> None:
+def test_read_pdf_upload_uses_fixed_chunks_without_application_limit(monkeypatch) -> None:
     import asyncio
-    from eosin.backend.bank_parser_api import read_limited_pdf_upload
+    from eosin.backend import bank_parser_api
 
     class ChunkedUpload:
         filename = "statement.pdf"
@@ -84,12 +80,13 @@ def test_read_limited_pdf_upload_rejects_before_unbounded_read(monkeypatch) -> N
 
     monkeypatch.setenv("BANK_PARSER_MAX_UPLOAD_BYTES", "12")
     upload = ChunkedUpload()
+    read_pdf_upload = getattr(bank_parser_api, "read_pdf_upload")
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(read_limited_pdf_upload(upload))
+    filename, payload = asyncio.run(read_pdf_upload(upload))
 
-    assert exc_info.value.status_code == 413
-    assert upload.read_sizes == [13, 13]
+    assert filename == "statement.pdf"
+    assert payload == b"%PDF-1234567890"
+    assert upload.read_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]
 
 
 def test_timeout_error_maps_to_503() -> None:
