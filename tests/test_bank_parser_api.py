@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -31,6 +32,20 @@ class FakeService:
 
     def is_ready(self) -> bool:
         return self.ready
+
+
+class FakeEvidenceService(FakeService):
+    def extract_glm_page_html_bytes(self, filename: str, pdf_bytes: bytes) -> dict:
+        from eosin.backend.bank_parser_api import validate_pdf_upload
+
+        page_count = validate_pdf_upload(filename, pdf_bytes)
+        return {
+            "source_pdf": filename,
+            "page_count": page_count,
+            "pages": [],
+            "timings": {},
+            "ocr_metrics": {},
+        }
 
 
 def test_validate_pdf_upload_ignores_retired_byte_limit(monkeypatch) -> None:
@@ -87,6 +102,43 @@ def test_read_pdf_upload_uses_fixed_chunks_without_application_limit(monkeypatch
     assert filename == "statement.pdf"
     assert payload == b"%PDF-1234567890"
     assert upload.read_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]
+
+
+def test_evidence_endpoint_accepts_pdf_above_retired_limits(monkeypatch) -> None:
+    from eosin.backend import bank_parser_api
+
+    async def run_inline(function):
+        return function()
+
+    monkeypatch.setenv("BANK_PARSER_MAX_UPLOAD_BYTES", "12")
+    monkeypatch.setenv("BANK_PARSER_MAX_PAGES", "1")
+    monkeypatch.setattr(bank_parser_api, "run_in_threadpool", run_inline)
+    payload = _minimal_pdf(page_count=2)
+    app = bank_parser_api.create_app(service=FakeEvidenceService())
+    endpoint = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v2/extract/bank-statement-evidence"
+    )
+
+    class AsyncUpload:
+        filename = "statement.pdf"
+
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def read(self, size: int = -1) -> bytes:
+            if not self._content:
+                return b""
+            chunk = self._content[:size]
+            self._content = self._content[size:]
+            return chunk
+
+    upload = AsyncUpload(payload)
+
+    response = asyncio.run(endpoint(upload))
+
+    assert response["page_count"] == 2
 
 
 def test_timeout_error_maps_to_503() -> None:
