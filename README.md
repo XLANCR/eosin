@@ -12,10 +12,12 @@ Use the deployed Modal web endpoint as `https://<workspace>--bank-parser.modal.r
 
 Production secrets are provisioned with `modal secret create eosin-tailscale` for Tailscale access and `modal secret create eosin-metrics-push` for push metrics credentials. pull-based monitoring is intentionally disabled for the Modal worker; use the configured push endpoint instead.
 
-Production request admission is bounded by `BANK_PARSER_MAX_UPLOAD_BYTES`,
-`BANK_PARSER_MAX_PAGES`, and `BANK_PARSER_POOL_WAIT_TIMEOUT`. `/health` is
-liveness; `/ready` checks parser-service readiness and returns `503` when the
-service cannot accept parser work.
+Eosin does not impose application-level PDF byte-size or page-count limits.
+Uploads must still have a PDF filename and signature and must open successfully
+with PyMuPDF. Production work remains protected by Modal proxy authentication,
+bounded container concurrency, parser-pool admission timeout, maximum container
+count, and function timeout. `/health` is liveness; `/ready` checks
+parser-service readiness and returns `503` when the service cannot accept work.
 
 ### What Makes Bank Statements So Hard to Parse?
 

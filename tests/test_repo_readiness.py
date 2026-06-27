@@ -112,8 +112,8 @@ def test_env_example_has_modal_defaults() -> None:
     assert "BANK_PARSER_PAGE_OCR_RETRY_ALL=false" in env_example
     assert "BANK_PARSER_PAGE_OCR_RETRY_DPI=300" in env_example
     assert "BANK_PARSER_CAPTURE_RAW_OCR_DEBUG=false" in env_example
-    assert "BANK_PARSER_MAX_UPLOAD_BYTES=25000000" in env_example
-    assert "BANK_PARSER_MAX_PAGES=64" in env_example
+    assert "BANK_PARSER_MAX_UPLOAD_BYTES" not in env_example
+    assert "BANK_PARSER_MAX_PAGES" not in env_example
     assert "BANK_PARSER_POOL_WAIT_TIMEOUT=30" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_SIDE=3500" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_PIXELS=9000000" in env_example
