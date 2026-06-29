@@ -1348,34 +1348,37 @@ class BankStatementParser:
         page_evaluations: Sequence[Dict[str, object]],
     ) -> Tuple[List[Dict[str, object]], Dict[str, float]]:
         evaluated_pages = {int(item["page_index"]) for item in page_evaluations}
-        missing_pages = [
+        missing_pages = {
             page_idx
             for page_idx, bbox in enumerate(table_bboxes)
             if bbox is None and page_idx not in evaluated_pages
-        ]
-        if not missing_pages:
+        }
+        weak_pages = {
+            int(item["page_index"])
+            for item in page_evaluations
+            if "money_in_non_amount_columns" in item.get("reasons", [])
+        }
+        recovery_pages = sorted(missing_pages | weak_pages)
+        if not recovery_pages:
             return list(page_evaluations), self._empty_ocr_metrics()
 
-        expected_headers = next(
-            (
-                list(item["raw_headers"])
-                for item in page_evaluations
-                if item.get("raw_headers")
-            ),
-            None,
-        )
         images = [
             (page_idx, self._normalize_ocr_image(page_images[page_idx]))
-            for page_idx in missing_pages
+            for page_idx in recovery_pages
         ]
         results, metrics = self._ocr_tables_parallel(images)
-        recovered: List[Dict[str, object]] = []
+        recovered_by_page: Dict[int, Dict[str, object]] = {}
         for page_idx, html_content in results:
+            pass_label = (
+                "layout_miss_full_page"
+                if page_idx in missing_pages
+                else "layout_quality_full_page"
+            )
             evaluation = self._evaluate_page_ocr_result(
                 page_idx=page_idx,
                 html_content=html_content,
-                expected_headers=expected_headers,
-                pass_label="layout_miss_full_page",
+                expected_headers=None,
+                pass_label=pass_label,
             )
             dataframe = evaluation.get("dataframe")
             if not isinstance(dataframe, pd.DataFrame) or not self._has_transaction_row_shape(dataframe):
@@ -1384,8 +1387,19 @@ class BankStatementParser:
                     *evaluation.get("reasons", []),
                     "layout_miss_not_transaction_table",
                 ]
-            recovered.append(evaluation)
-        return sorted([*page_evaluations, *recovered], key=lambda item: int(item["page_index"])), metrics
+            recovered_by_page[page_idx] = evaluation
+
+        merged: List[Dict[str, object]] = []
+        for primary in page_evaluations:
+            page_idx = int(primary["page_index"])
+            recovered = recovered_by_page.pop(page_idx, None)
+            merged.append(
+                self._select_best_page_ocr_evaluation([primary, recovered])
+                if recovered is not None
+                else primary
+            )
+        merged.extend(recovered_by_page.values())
+        return sorted(merged, key=lambda item: int(item["page_index"])), metrics
 
     def _materialize_selected_tables(
         self,
