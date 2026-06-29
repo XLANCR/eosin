@@ -347,7 +347,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
     inferred_frames, inferred_schema_count = _infer_generic_schemas(non_empty_frames)
     combined = _coalesce_semantic_columns(_ordered_combined_frame(inferred_frames))
     public_columns = [column for column in combined.columns if column not in SOURCE_COLUMNS]
-    canonical_date_column = _canonical_date_column(non_empty_frames)
+    canonical_date_column = _canonical_date_column(inferred_frames)
     if canonical_date_column not in combined.columns:
         combined[canonical_date_column] = ""
         public_columns.append(canonical_date_column)
@@ -369,7 +369,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             last_row_was_attachable = False
             continue
 
-        resolved_date, source_column = _resolve_date(row, public_columns)
+        resolved_date, _ = _resolve_date(row, public_columns)
         if resolved_date:
             if not _has_transaction_evidence(values):
                 rejections["dated_without_transaction_evidence"] += 1

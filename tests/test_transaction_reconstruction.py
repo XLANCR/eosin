@@ -143,6 +143,7 @@ def test_infers_transaction_roles_for_fully_generic_ocr_table() -> None:
 
     assert len(result.dataframe) == 2
     assert list(result.dataframe["Transaction Date"]) == ["27/11/20", "02/12/20"]
+    assert "Date" not in result.dataframe.columns
     assert list(result.dataframe["Description"]) == [
         "IMPS PAYMENT TO MERCHANT",
         "SALARY CREDIT",
