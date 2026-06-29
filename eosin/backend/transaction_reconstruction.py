@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from math import ceil
 from typing import Any, Sequence
 
 import pandas as pd
@@ -26,6 +27,12 @@ _DATE_CELL_RE = re.compile(
     re.IGNORECASE,
 )
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_GENERIC_HEADER_RE = re.compile(r"^(?:col(?:umn)?|unnamed)\D*\d+$", re.IGNORECASE)
+_MONEY_CELL_RE = re.compile(
+    r"^\s*(?:[₹$€£]\s*)?[+-]?(?:\d{1,3}(?:,\d{2,3})+|\d+)\.\d{1,2}"
+    r"(?:\s*(?:cr|dr))?\s*$",
+    re.IGNORECASE,
+)
 _SUMMARY_MARKERS = (
     ("opening_balance", "opening balance"),
     ("closing_balance", "closing balance"),
@@ -130,6 +137,73 @@ def _resolve_date(row: pd.Series, public_columns: Sequence[object]) -> tuple[str
 
 def _clean_value(value: object) -> str:
     return "" if pd.isna(value) else str(value).strip()
+
+
+def _is_generic_header(column: object) -> bool:
+    return bool(_GENERIC_HEADER_RE.fullmatch(str(column).strip()))
+
+
+def _looks_like_money(value: object) -> bool:
+    return bool(_MONEY_CELL_RE.fullmatch(_clean_value(value)))
+
+
+def _generic_role_map(frame: pd.DataFrame) -> dict[object, str]:
+    columns = [column for column in frame.columns if column not in SOURCE_COLUMNS]
+    if len(columns) < 3 or not all(_is_generic_header(column) for column in columns):
+        return {}
+
+    date_counts = {column: int(frame[column].map(_is_date_value).sum()) for column in columns}
+    minimum_date_count = max(2, ceil(len(frame) * 0.35))
+    date_columns = [column for column in columns if date_counts[column] >= minimum_date_count]
+    dated_rows = frame[date_columns].map(_is_date_value).any(axis=1) if date_columns else pd.Series(dtype=bool)
+    if not date_columns or int(dated_rows.sum()) < 2:
+        return {}
+
+    candidate_rows = frame.loc[dated_rows]
+    text_scores: dict[object, float] = {}
+    money_columns: list[object] = []
+    for column in columns:
+        if column in date_columns:
+            continue
+        values = candidate_rows[column].map(_clean_value)
+        present = values[values.ne("")]
+        if present.empty:
+            continue
+        money_ratio = float(present.map(_looks_like_money).mean())
+        alpha_ratio = float(present.map(lambda value: bool(re.search(r"[A-Za-z]{3}", value))).mean())
+        if money_ratio >= 0.5:
+            money_columns.append(column)
+        if alpha_ratio >= 0.5:
+            text_scores[column] = alpha_ratio * float(present.map(len).mean())
+
+    if not text_scores or not money_columns:
+        return {}
+    description_column = max(text_scores, key=text_scores.get)
+    mapping = {date_columns[0]: "Transaction Date", description_column: "Description"}
+    if len(date_columns) > 1:
+        mapping[date_columns[1]] = "Value Date"
+    remaining = [column for column in columns if column not in mapping and column not in money_columns]
+    if remaining:
+        mapping[remaining[0]] = "Reference"
+    if len(money_columns) >= 3:
+        for column, role in zip(money_columns[-3:], ("Debit", "Credit", "Balance")):
+            mapping[column] = role
+    elif len(money_columns) == 2:
+        mapping[money_columns[0]] = "Amount"
+        mapping[money_columns[1]] = "Balance"
+    else:
+        mapping[money_columns[0]] = "Amount"
+    return mapping
+
+
+def _infer_generic_schemas(frames: Sequence[pd.DataFrame]) -> tuple[list[pd.DataFrame], int]:
+    inferred: list[pd.DataFrame] = []
+    count = 0
+    for frame in frames:
+        role_map = _generic_role_map(frame)
+        inferred.append(frame.rename(columns=role_map) if role_map else frame.copy())
+        count += bool(role_map)
+    return inferred, count
 
 
 def _row_values(row: pd.Series, public_columns: Sequence[object]) -> dict[object, str]:
@@ -265,11 +339,13 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             "absorbed_continuation_sources": 0,
             "excluded_non_transaction_sources": 0,
             "rejected_unclassified_sources": 0,
+            "generic_schema_frames_inferred": 0,
             "conservation_ok": True,
         }
         return ReconstructionResult(dataframe=pd.DataFrame(), diagnostics=diagnostics)
 
-    combined = _coalesce_semantic_columns(_ordered_combined_frame(non_empty_frames))
+    inferred_frames, inferred_schema_count = _infer_generic_schemas(non_empty_frames)
+    combined = _coalesce_semantic_columns(_ordered_combined_frame(inferred_frames))
     public_columns = [column for column in combined.columns if column not in SOURCE_COLUMNS]
     canonical_date_column = _canonical_date_column(non_empty_frames)
     if canonical_date_column not in combined.columns:
@@ -351,6 +427,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         "absorbed_continuation_sources": absorbed_continuations,
         "excluded_non_transaction_sources": excluded_count,
         "rejected_unclassified_sources": rejected_count,
+        "generic_schema_frames_inferred": inferred_schema_count,
         "exclusion_reasons": dict(sorted(exclusions.items())),
         "rejection_reasons": dict(sorted(rejections.items())),
         "conservation_ok": selected

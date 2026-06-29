@@ -114,6 +114,76 @@ def test_uses_generic_date_column_when_named_date_column_is_empty() -> None:
     assert SOURCE_TABLE_COLUMN not in result.dataframe.columns
 
 
+def test_infers_transaction_roles_for_fully_generic_ocr_table() -> None:
+    frame = source_frame(
+        2,
+        [
+            {
+                "col_0": "27/11/20",
+                "col_1": "IMPS PAYMENT TO MERCHANT",
+                "col_2": "000003212146353",
+                "col_3": "27/11/20",
+                "col_4": "700.00",
+                "col_5": "",
+                "col_6": "26,345.34",
+            },
+            {
+                "col_0": "02/12/20",
+                "col_1": "SALARY CREDIT",
+                "col_2": "000000000000002",
+                "col_3": "02/12/20",
+                "col_4": "",
+                "col_5": "24,690.00",
+                "col_6": "51,035.34",
+            },
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert len(result.dataframe) == 2
+    assert list(result.dataframe["Transaction Date"]) == ["27/11/20", "02/12/20"]
+    assert list(result.dataframe["Description"]) == [
+        "IMPS PAYMENT TO MERCHANT",
+        "SALARY CREDIT",
+    ]
+    assert result.dataframe.iloc[0]["Debit"] == "700.00"
+    assert result.dataframe.iloc[1]["Credit"] == "24,690.00"
+    assert result.diagnostics["generic_schema_frames_inferred"] == 1
+
+
+def test_does_not_infer_transaction_roles_for_generic_account_profile() -> None:
+    frame = source_frame(
+        0,
+        [
+            {"col_0": "Account Number", "col_1": "123456789", "col_2": ""},
+            {"col_0": "Customer Name", "col_1": "Example Customer", "col_2": ""},
+            {"col_0": "Opening Balance", "col_1": "1,000.00", "col_2": ""},
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert result.dataframe.empty
+    assert result.diagnostics["generic_schema_frames_inferred"] == 0
+
+
+def test_does_not_infer_generic_schema_from_sparse_statement_dates() -> None:
+    rows = [
+        {"col_0": "Statement From", "col_1": "01/01/2024", "col_2": "1,000.00"},
+        {"col_0": "Statement To", "col_1": "31/01/2024", "col_2": "900.00"},
+    ]
+    rows.extend(
+        {"col_0": f"Account metadata {index}", "col_1": "", "col_2": ""}
+        for index in range(8)
+    )
+
+    result = reconstruct_transactions([source_frame(0, rows)])
+
+    assert result.dataframe.empty
+    assert result.diagnostics["generic_schema_frames_inferred"] == 0
+
+
 def test_merges_text_continuation_across_page_boundary() -> None:
     frames = [
         source_frame(
