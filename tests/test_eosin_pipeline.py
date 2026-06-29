@@ -295,6 +295,18 @@ def test_identify_main_tables_fallback_accepts_parallel_results_with_metrics(mon
     assert main_tables == [[0, 0, 800, 800]]
 
 
+def test_expands_transaction_crop_to_full_page_width():
+    module = _load_eosin_pipeline_module()
+    page = module.Image.new("RGB", (1200, 1600), "white")
+
+    expanded = module.BankStatementParser._expand_table_bbox_horizontally(
+        [125, 300, 1050, 1400],
+        page,
+    )
+
+    assert expanded == [0, 300, 1200, 1400]
+
+
 def test_select_best_table_candidate_prefers_header_match_on_followup_pages():
     module = _load_eosin_pipeline_module()
     html_tables = [
