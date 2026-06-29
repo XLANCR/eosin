@@ -793,6 +793,7 @@ def test_recovers_column_leaking_layout_page_with_full_page_ocr(monkeypatch):
 
     def fake_ocr(images):
         assert [page_index for page_index, _ in images] == [0]
+        assert images[0][1].size == (80, 80)
         return [
             (
                 0,
@@ -807,15 +808,16 @@ def test_recovers_column_leaking_layout_page_with_full_page_ocr(monkeypatch):
 
     monkeypatch.setattr(parser, "_normalize_ocr_image", lambda image: image)
     monkeypatch.setattr(parser, "_ocr_tables_parallel", fake_ocr)
+    monkeypatch.setattr(module, "crop_image_region", lambda image, bbox: image.crop(tuple(bbox)))
 
     evaluations, _ = parser._recover_missing_layout_pages(
         page_images=[page],
-        table_bboxes=[[0, 0, 100, 100]],
+        table_bboxes=[[20, 10, 70, 90]],
         page_evaluations=[primary],
     )
 
     assert len(evaluations) == 1
-    assert evaluations[0]["pass_label"] == "layout_quality_full_page"
+    assert evaluations[0]["pass_label"] == "layout_quality_right_edge"
     assert evaluations[0]["selected"] is True
     assert evaluations[0]["columns"] == ["Date", "Description", "Debit", "Credit", "Balance"]
 

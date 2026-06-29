@@ -1362,17 +1362,24 @@ class BankStatementParser:
         if not recovery_pages:
             return list(page_evaluations), self._empty_ocr_metrics()
 
-        images = [
-            (page_idx, self._normalize_ocr_image(page_images[page_idx]))
-            for page_idx in recovery_pages
-        ]
+        images: List[Tuple[int, Image.Image]] = []
+        for page_idx in recovery_pages:
+            image = page_images[page_idx]
+            bbox = table_bboxes[page_idx]
+            if page_idx in weak_pages and bbox is not None:
+                x_min, y_min, _, y_max = (int(value) for value in bbox)
+                image = crop_image_region(
+                    image,
+                    [x_min, y_min, int(image.width), y_max],
+                )
+            images.append((page_idx, self._normalize_ocr_image(image)))
         results, metrics = self._ocr_tables_parallel(images)
         recovered_by_page: Dict[int, Dict[str, object]] = {}
         for page_idx, html_content in results:
             pass_label = (
                 "layout_miss_full_page"
                 if page_idx in missing_pages
-                else "layout_quality_full_page"
+                else "layout_quality_right_edge"
             )
             evaluation = self._evaluate_page_ocr_result(
                 page_idx=page_idx,
