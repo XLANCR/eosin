@@ -16,7 +16,7 @@ SOURCE_COLUMNS = (SOURCE_PAGE_COLUMN, SOURCE_ROW_COLUMN, SOURCE_TABLE_COLUMN)
 _DATE_ATOM = (
     r"(?:"
     r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"
-    r"|\d{1,2}\s+[A-Za-z]{3,9}\s+[']?\d{2,4}"
+    r"|\d{1,2}\s*[A-Za-z]{3,9}\s*[']?\d{2,4}"
     r"|\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4}"
     r")"
 )
@@ -75,6 +75,24 @@ def _header_role(column: object) -> str:
     if normalized in {"serialno", "slno", "srno", "no"} or str(column).strip() == "#":
         return "serial"
     return "other"
+
+
+def _semantic_header_key(column: object) -> str:
+    normalized = re.sub(r"\d+$", "", _normalized_header(column))
+    if normalized in {"debt", "debtdr", "debit", "debitdr", "withdrawal", "withdrawals"}:
+        return "debit"
+    if normalized in {"credit", "creditcr", "cr", "deposit", "deposits"}:
+        return "credit"
+    if normalized in {
+        "chqrefno",
+        "chqrefnumber",
+        "chequerefno",
+        "refno",
+        "referenceno",
+        "referencenumber",
+    }:
+        return "reference"
+    return normalized
 
 
 def _date_header_priority(column: object) -> tuple[int, int]:
@@ -213,6 +231,31 @@ def _ordered_combined_frame(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     return combined
 
 
+def _coalesce_semantic_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    merged = frame.copy()
+    canonical_by_key: dict[str, object] = {}
+    drop_columns: list[object] = []
+    for column in [item for item in merged.columns if item not in SOURCE_COLUMNS]:
+        key = _semantic_header_key(column)
+        if not key:
+            continue
+        canonical = canonical_by_key.get(key)
+        if canonical is None:
+            canonical_by_key[key] = column
+            continue
+        canonical_values = merged[canonical].map(_clean_value)
+        duplicate_values = merged[column].map(_clean_value)
+        canonical_blank = canonical_values.isin(["", "-"])
+        duplicate_present = ~duplicate_values.isin(["", "-"])
+        conflicts = (~canonical_blank) & duplicate_present & (canonical_values != duplicate_values)
+        merged.loc[canonical_blank & duplicate_present, canonical] = duplicate_values[
+            canonical_blank & duplicate_present
+        ]
+        if not bool(conflicts.any()):
+            drop_columns.append(column)
+    return merged.drop(columns=drop_columns) if drop_columns else merged
+
+
 def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionResult:
     non_empty_frames = [frame.copy() for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
     if not non_empty_frames:
@@ -226,7 +269,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         }
         return ReconstructionResult(dataframe=pd.DataFrame(), diagnostics=diagnostics)
 
-    combined = _ordered_combined_frame(non_empty_frames)
+    combined = _coalesce_semantic_columns(_ordered_combined_frame(non_empty_frames))
     public_columns = [column for column in combined.columns if column not in SOURCE_COLUMNS]
     canonical_date_column = _canonical_date_column(non_empty_frames)
     if canonical_date_column not in combined.columns:

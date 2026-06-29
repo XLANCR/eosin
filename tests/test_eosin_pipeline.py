@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PIPELINE_PATH = ROOT / "eosin" / "backend" / "eosin_pipeline.py"
 SERVICE_PATH = ROOT / "eosin" / "backend" / "bank_parser_service.py"
 API_PATH = ROOT / "eosin" / "backend" / "bank_parser_api.py"
+TRANSACTION_RECONSTRUCTION_PATH = ROOT / "eosin" / "backend" / "transaction_reconstruction.py"
 
 
 class DummyLayoutDetector:
@@ -89,6 +90,7 @@ def _install_stub_modules(detector_factory) -> None:
         "eosin.backend.eosin_pipeline",
         "eosin.backend.ocr_pipeline",
         "eosin.backend.metrics",
+        "eosin.backend.transaction_reconstruction",
         "eosin.backend",
         "eosin",
         "glmocr.utils.image_utils",
@@ -157,6 +159,10 @@ def _install_stub_modules(detector_factory) -> None:
 
 def _load_runtime_modules(detector_factory=DummyLayoutDetector):
     _install_stub_modules(detector_factory)
+    _load_module(
+        "eosin.backend.transaction_reconstruction",
+        TRANSACTION_RECONSTRUCTION_PATH,
+    )
     pipeline_module = _load_module("eosin.backend.eosin_pipeline", PIPELINE_PATH)
     service_module = _load_module("eosin.backend.bank_parser_service", SERVICE_PATH)
     api_module = _load_module(
@@ -557,7 +563,7 @@ def test_extract_transaction_dataframes_combines_split_pages():
     parser.close()
 
 
-def test_finalize_extracted_tables_drops_adjacent_duplicate_rows_after_normalization():
+def test_finalize_extracted_tables_preserves_identical_transaction_rows():
     module = _load_eosin_pipeline_module()
     parser = module.BankStatementParser.__new__(module.BankStatementParser)
 
@@ -603,8 +609,79 @@ def test_finalize_extracted_tables_drops_adjacent_duplicate_rows_after_normaliza
         ["Date", "Description", "Debit", "Credit", "Balance"],
     )
 
-    assert len(combined) == 3
-    assert list(combined["Date"]) == ["01/01/2024", "02/01/2024", "03/01/2024"]
+    assert len(combined) == 4
+    assert list(combined["Date"]) == [
+        "01/01/2024",
+        "02/01/2024",
+        "02/01/2024",
+        "03/01/2024",
+    ]
+
+
+def test_materialize_selected_tables_attaches_source_provenance():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+    page_evaluations = [
+        {
+            "page_index": 4,
+            "selected": True,
+            "selected_table_index": 2,
+            "table_count": 3,
+            "raw_headers": ["Date", "Description", "Debit", "Balance"],
+            "dataframe": pd.DataFrame(
+                [
+                    {"Date": "01/01/2024", "Description": "A", "Debit": "1", "Balance": "9"},
+                    {"Date": "02/01/2024", "Description": "B", "Debit": "2", "Balance": "7"},
+                ]
+            ),
+        }
+    ]
+
+    frames, _, _ = parser._materialize_selected_tables(page_evaluations)
+
+    assert list(frames[0]["__source_page"]) == [4, 4]
+    assert list(frames[0]["__source_row"]) == [0, 1]
+    assert list(frames[0]["__source_table"]) == [2, 2]
+
+
+def test_finalize_extracted_tables_coalesces_schema_drift_before_classification():
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+    first_page = pd.DataFrame(
+        [
+            {
+                "Date(Value Date)": "01-Jul-23(01-Jul-2023)",
+                "Date (Value Date)": "",
+                "Narration": "FIRST",
+                "Debit": "10.00",
+                "Balance": "90.00",
+                "__source_page": 0,
+                "__source_row": 0,
+                "__source_table": 0,
+            }
+        ]
+    )
+    second_page = pd.DataFrame(
+        [
+            {
+                "Date(Value Date)": "",
+                "Date (Value Date)": "02-Jul-23(02-Jul-2023)",
+                "Narration": "SECOND",
+                "Debit": "20.00",
+                "Balance": "70.00",
+                "__source_page": 1,
+                "__source_row": 0,
+                "__source_table": 0,
+            }
+        ]
+    )
+
+    combined = parser._finalize_extracted_tables([first_page, second_page], ["Date (Value Date)"])
+
+    assert len(combined) == 2
+    assert parser._last_transaction_reconstruction["selected_source_rows"] == 2
+    assert parser._last_transaction_reconstruction["conservation_ok"] is True
+    assert not any(str(column).startswith("__source_") for column in combined.columns)
 
 
 def test_evaluate_page_ocr_result_marks_repeated_garbage_as_suspicious():
@@ -709,7 +786,7 @@ def test_evaluate_page_ocr_result_flags_column_shift_without_repairing_values():
     assert evaluation["suspicious"] is True
 
 
-def test_finalize_extracted_tables_drops_null_heavy_and_runaway_rows():
+def test_finalize_extracted_tables_excludes_summary_but_keeps_dated_ocr_row():
     module = _load_eosin_pipeline_module()
     parser = module.BankStatementParser.__new__(module.BankStatementParser)
 
@@ -751,7 +828,7 @@ def test_finalize_extracted_tables_drops_null_heavy_and_runaway_rows():
         ["Date", "Description", "Debit", "Credit", "Balance"],
     )
 
-    assert list(cleaned["Date"]) == ["01/01/2024", "03/01/2024"]
+    assert list(cleaned["Date"]) == ["02/01/2024", "03/01/2024"]
 
 
 def test_finalize_extracted_tables_keeps_long_legitimate_descriptions():

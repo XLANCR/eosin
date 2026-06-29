@@ -84,6 +84,12 @@ from glmocr.ocr_client import OCRClient
 from glmocr.utils.image_utils import crop_image_region, pdf_to_images_pil
 
 from eosin.backend.ocr_pipeline import OCRPipelineDispatcher, OCRTaskResult
+from eosin.backend.transaction_reconstruction import (
+    SOURCE_PAGE_COLUMN,
+    SOURCE_ROW_COLUMN,
+    SOURCE_TABLE_COLUMN,
+    reconstruct_transactions,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1309,6 +1315,12 @@ class BankStatementParser:
             aligned_df = self._align_columns_with_headers(dataframe, expected_headers or [])
             if aligned_df.empty:
                 continue
+            aligned_df = aligned_df.copy()
+            aligned_df[SOURCE_PAGE_COLUMN] = page_idx
+            aligned_df[SOURCE_ROW_COLUMN] = range(len(aligned_df))
+            aligned_df[SOURCE_TABLE_COLUMN] = (
+                selected_table_index if isinstance(selected_table_index, int) else 0
+            )
             all_dfs.append(aligned_df)
             added_row_count = len(aligned_df)
 
@@ -1467,15 +1479,10 @@ class BankStatementParser:
         all_dfs: List[pd.DataFrame],
         expected_headers: Optional[List[str]],
     ) -> pd.DataFrame:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        combined = self._remove_header_rows(combined, expected_headers or [])
-        combined = self._drop_low_quality_rows(combined, expected_headers or [])
-        combined = self._merge_multiline_rows(combined)
-        combined = self._dedupe_adjacent_rows(combined)
-        combined = self._apply_bank_specific_repairs(combined)
-        combined = self._merge_semantic_duplicate_columns(combined)
-        combined = self._filter_valid_date_rows(combined)
-        return combined.replace(r'^\s*$', np.nan, regex=True).dropna(axis=1, how='all')
+        del expected_headers
+        result = reconstruct_transactions(all_dfs)
+        self._last_transaction_reconstruction = result.diagnostics
+        return result.dataframe
 
     @staticmethod
     def _count_header_like_rows(df: pd.DataFrame, headers: Sequence[str]) -> int:
@@ -1849,6 +1856,7 @@ class BankStatementParser:
             "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
             "page_ocr": self._serialize_page_evaluations(page_evaluations),
             "quality_summary": quality_summary,
+            "transaction_reconstruction": dict(self._last_transaction_reconstruction),
         }
         print(f"  → Processed {len(combined)} rows in {elapsed:.1f}s")
         return combined
@@ -2047,6 +2055,7 @@ class BankStatementParser:
             "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
             "page_ocr": self._serialize_page_evaluations(page_evaluations),
             "quality_summary": quality_summary,
+            "transaction_reconstruction": dict(self._last_transaction_reconstruction),
             "debug_image_dir": debug_dir,
         }
         print(f"  → Processed {len(combined)} rows in {elapsed:.1f}s")

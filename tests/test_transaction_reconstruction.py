@@ -73,6 +73,24 @@ def test_accepts_transaction_date_with_time_suffix() -> None:
     assert result.dataframe.iloc[0]["TRANSACTION DATE"] == "02 Jan 2024 11:18 AM"
 
 
+def test_accepts_month_name_date_without_space_before_year() -> None:
+    frame = source_frame(
+        0,
+        [
+            {
+                "Txn Date": "10 Dec2021",
+                "Description": "UPI transfer",
+                "Debit": "3.50",
+                "Balance": "5,29,776.23",
+            }
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert len(result.dataframe) == 1
+
+
 def test_uses_generic_date_column_when_named_date_column_is_empty() -> None:
     frame = source_frame(
         0,
