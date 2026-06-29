@@ -2031,12 +2031,6 @@ class BankStatementParser:
         print("  [3/8] Identifying main tables...")
         step_started_at = time.time()
         table_bboxes = self._identify_main_tables(all_layout_results, page_images)
-        table_bboxes = [
-            self._expand_table_bbox_horizontally(bbox, page_images[page_idx])
-            if bbox is not None
-            else None
-            for page_idx, bbox in enumerate(table_bboxes)
-        ]
         step_timings["identify_main_tables"] = round(time.time() - step_started_at, 3)
         pages_with_tables = [i for i, bbox in enumerate(table_bboxes) if bbox is not None]
         print(f"        → Tables on pages: {[p + 1 for p in pages_with_tables]}")
@@ -2205,21 +2199,6 @@ class BankStatementParser:
         }
         print(f"  → Processed {len(combined)} rows in {elapsed:.1f}s")
         return combined
-
-    @staticmethod
-    def _expand_table_bbox_horizontally(
-        bbox: Sequence[int],
-        page_image: Image.Image,
-    ) -> List[int]:
-        if len(bbox) != 4:
-            raise ValueError("table bbox must contain four coordinates")
-        _, y_min, _, y_max = (int(value) for value in bbox)
-        return [
-            0,
-            max(0, y_min),
-            int(page_image.width),
-            min(int(page_image.height), y_max),
-        ]
 
     def _identify_main_tables(
         self,
