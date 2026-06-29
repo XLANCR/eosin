@@ -389,6 +389,20 @@ def _infer_headerless_bank_columns(rows: Sequence[Sequence[str]]) -> Optional[Li
                 "Amount",
                 "Balance",
             ]
+        clipped_money_hits = sum(
+            1
+            for row in candidate_rows
+            if _cell_is_amount_like(row[4]) or _cell_is_amount_like(row[5])
+        )
+        if hdfc_text_hits and value_date_hits and clipped_money_hits:
+            return [
+                "Transaction Date",
+                "Description",
+                "Reference",
+                "Value Date",
+                "Debit",
+                "Credit",
+            ]
         text_hits = sum(1 for row in candidate_rows if text_like(row[1]))
         money_hits = sum(1 for row in candidate_rows if any(_cell_is_amount_like(row[index]) for index in (2, 3, 4)))
         if text_hits and money_hits:
@@ -1353,39 +1367,22 @@ class BankStatementParser:
             for page_idx, bbox in enumerate(table_bboxes)
             if bbox is None and page_idx not in evaluated_pages
         }
-        weak_pages = {
-            int(item["page_index"])
-            for item in page_evaluations
-            if "money_in_non_amount_columns" in item.get("reasons", [])
-        }
-        recovery_pages = sorted(missing_pages | weak_pages)
+        recovery_pages = sorted(missing_pages)
         if not recovery_pages:
             return list(page_evaluations), self._empty_ocr_metrics()
 
         images: List[Tuple[int, Image.Image]] = []
         for page_idx in recovery_pages:
             image = page_images[page_idx]
-            bbox = table_bboxes[page_idx]
-            if page_idx in weak_pages and bbox is not None:
-                x_min, y_min, _, y_max = (int(value) for value in bbox)
-                image = crop_image_region(
-                    image,
-                    [x_min, y_min, int(image.width), y_max],
-                )
             images.append((page_idx, self._normalize_ocr_image(image)))
         results, metrics = self._ocr_tables_parallel(images)
         recovered_by_page: Dict[int, Dict[str, object]] = {}
         for page_idx, html_content in results:
-            pass_label = (
-                "layout_miss_full_page"
-                if page_idx in missing_pages
-                else "layout_quality_right_edge"
-            )
             evaluation = self._evaluate_page_ocr_result(
                 page_idx=page_idx,
                 html_content=html_content,
                 expected_headers=None,
-                pass_label=pass_label,
+                pass_label="layout_miss_full_page",
             )
             dataframe = evaluation.get("dataframe")
             if not isinstance(dataframe, pd.DataFrame) or not self._has_transaction_row_shape(dataframe):
@@ -1396,17 +1393,10 @@ class BankStatementParser:
                 ]
             recovered_by_page[page_idx] = evaluation
 
-        merged: List[Dict[str, object]] = []
-        for primary in page_evaluations:
-            page_idx = int(primary["page_index"])
-            recovered = recovered_by_page.pop(page_idx, None)
-            merged.append(
-                self._select_best_page_ocr_evaluation([primary, recovered])
-                if recovered is not None
-                else primary
-            )
-        merged.extend(recovered_by_page.values())
-        return sorted(merged, key=lambda item: int(item["page_index"])), metrics
+        return sorted(
+            [*page_evaluations, *recovered_by_page.values()],
+            key=lambda item: int(item["page_index"]),
+        ), metrics
 
     def _materialize_selected_tables(
         self,

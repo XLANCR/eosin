@@ -142,6 +142,45 @@ def test_resolves_single_amount_direction_from_running_balance() -> None:
     assert result.diagnostics["balance_resolved_amount_sources"] == 2
 
 
+def test_derives_missing_balance_from_explicit_ledger_values() -> None:
+    frame = source_frame(
+        0,
+        [
+            {"Date": "01/01/2024", "Description": "START", "Credit": "100.00", "Balance": "100.00"},
+            {"Date": "02/01/2024", "Description": "PURCHASE", "Debit": "10.00", "Balance": ""},
+            {"Date": "03/01/2024", "Description": "REFUND", "Credit": "5.00", "Balance": ""},
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert list(result.dataframe["Balance"]) == ["100.00", "90.00", "95.00"]
+    assert result.diagnostics["derived_balance_sources"] == 2
+
+
+def test_merges_undated_fragment_forward_into_next_dated_row() -> None:
+    frames = [
+        source_frame(
+            0,
+            [{"Date": "01/01/2024", "Description": "START", "Credit": "100.00", "Balance": "100.00"}],
+        ),
+        source_frame(
+            1,
+            [
+                {"Date": "", "Description": "PAYMENT", "Credit": "20.00", "Balance": ""},
+                {"Date": "02/01/2024", "Description": "MERCHANT PAYMENT", "Credit": "", "Balance": "120.00"},
+            ],
+        ),
+    ]
+
+    result = reconstruct_transactions(frames)
+
+    assert len(result.dataframe) == 2
+    assert result.dataframe.iloc[1]["Description"] == "MERCHANT PAYMENT"
+    assert result.dataframe.iloc[1]["Credit"] == "20.00"
+    assert result.diagnostics["absorbed_continuation_sources"] == 1
+
+
 def test_accepts_transaction_date_with_time_suffix() -> None:
     frame = source_frame(
         0,
@@ -342,6 +381,22 @@ def test_inherits_grouped_date_only_for_full_transaction_row() -> None:
     assert result.diagnostics["emitted_transaction_sources"] == 2
 
 
+def test_keeps_grouped_undated_transaction_before_next_dated_row() -> None:
+    frame = source_frame(
+        0,
+        [
+            {"Date": "03/01/2024", "Description": "FIRST", "Debit": "10.00", "Balance": "90.00"},
+            {"Date": "", "Description": "SECOND", "Debit": "20.00", "Balance": "70.00"},
+            {"Date": "04/01/2024", "Description": "THIRD", "Credit": "30.00", "Balance": "100.00"},
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert len(result.dataframe) == 3
+    assert list(result.dataframe["Date"]) == ["03/01/2024", "03/01/2024", "04/01/2024"]
+
+
 def test_rejects_ambiguous_undated_row_without_emitting_it() -> None:
     frame = source_frame(0, [{"Date": "", "Description": "Unstructured note"}])
 
@@ -444,6 +499,36 @@ def test_excludes_short_replayed_source_page_after_date_regression() -> None:
     assert len(result.dataframe) == 3
     assert result.diagnostics["exclusion_reasons"]["replayed_source_page"] == 2
     assert result.diagnostics["replayed_source_pages"] == [2]
+
+
+def test_excludes_replayed_prefix_before_page_resumes_forward() -> None:
+    frames = [
+        source_frame(
+            0,
+            [
+                {"Date": "01/01/2024", "Description": "FIRST", "Debit": "10.00", "Balance": "90.00"},
+                {"Date": "02/01/2024", "Description": "SECOND", "Debit": "20.00", "Balance": "70.00"},
+                {"Date": "03/01/2024", "Description": "THIRD", "Credit": "30.00", "Balance": "100.00"},
+            ],
+        ),
+        source_frame(
+            1,
+            [
+                {"Date": "01/01/2024", "Description": "FIRST REPLAY", "Debit": "10.00", "Balance": ""},
+                {"Date": "02/01/2024", "Description": "SECOND REPLAY", "Debit": "20.00", "Balance": ""},
+                {"Date": "04/01/2024", "Description": "FOURTH", "Credit": "30.00", "Balance": "130.00"},
+            ],
+        ),
+    ]
+
+    result = reconstruct_transactions(frames)
+
+    assert len(result.dataframe) == 4
+    assert result.diagnostics["exclusion_reasons"]["replayed_source_row"] == 2
+    assert result.diagnostics["replayed_source_rows"] == [
+        {"page": 1, "row": 0, "table": 0},
+        {"page": 1, "row": 1, "table": 0},
+    ]
 
 
 def test_accounts_for_every_selected_source_row() -> None:

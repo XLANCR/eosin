@@ -415,6 +415,30 @@ def test_parse_html_table_infers_hdfc_single_amount_columns():
     assert dataframe.iloc[0]["Balance"] == "4,373.34"
 
 
+def test_parse_html_table_infers_hdfc_clipped_balance_columns():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <tr><td>25/12/20</td><td>CREDIT PAYMENT</td><td>000000000000002</td><td>25/12/20</td><td></td><td>1.00</td></tr>
+          <tr><td>28/12/20</td><td>LOAN DEBIT</td><td>000037814900000</td><td>28/12/20</td><td>1,000.00</td><td></td></tr>
+        </table>
+        """
+    )
+
+    assert list(dataframe.columns) == [
+        "Transaction Date",
+        "Description",
+        "Reference",
+        "Value Date",
+        "Debit",
+        "Credit",
+    ]
+    assert dataframe.iloc[0]["Credit"] == "1.00"
+    assert dataframe.iloc[1]["Debit"] == "1,000.00"
+
+
 def test_parse_html_table_names_blank_axis_date_header_from_row_shape():
     module = _load_eosin_pipeline_module()
 
@@ -770,56 +794,6 @@ def test_recovers_transaction_table_from_page_missed_by_layout(monkeypatch):
     assert evaluations[1]["selected"] is True
     assert evaluations[2]["selected"] is False
     assert "layout_miss_not_transaction_table" in evaluations[2]["reasons"]
-
-
-def test_recovers_column_leaking_layout_page_with_full_page_ocr(monkeypatch):
-    module = _load_eosin_pipeline_module()
-    parser = module.BankStatementParser.__new__(module.BankStatementParser)
-    page = module.Image.new("RGB", (100, 100), "white")
-    primary = parser._evaluate_page_ocr_result(
-        page_idx=0,
-        html_content="""
-        <table>
-          <tr><th>Date</th><th>Description</th><th>Debit</th><th>Balance</th><th>Init. Br</th></tr>
-          <tr><td>01/01/2024</td><td>PAYMENT</td><td>10.00</td><td>90.00</td><td>50.00</td></tr>
-        </table>
-        """,
-        expected_headers=None,
-        pass_label="primary",
-    )
-    primary["reasons"] = ["money_in_non_amount_columns"]
-    primary["suspicious"] = True
-    primary["quality_score"] = 20
-
-    def fake_ocr(images):
-        assert [page_index for page_index, _ in images] == [0]
-        assert images[0][1].size == (80, 80)
-        return [
-            (
-                0,
-                """
-                <table>
-                  <tr><th>Date</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th></tr>
-                  <tr><td>01/01/2024</td><td>PAYMENT</td><td>10.00</td><td></td><td>90.00</td></tr>
-                </table>
-                """,
-            )
-        ], {"task_count": 1.0}
-
-    monkeypatch.setattr(parser, "_normalize_ocr_image", lambda image: image)
-    monkeypatch.setattr(parser, "_ocr_tables_parallel", fake_ocr)
-    monkeypatch.setattr(module, "crop_image_region", lambda image, bbox: image.crop(tuple(bbox)))
-
-    evaluations, _ = parser._recover_missing_layout_pages(
-        page_images=[page],
-        table_bboxes=[[20, 10, 70, 90]],
-        page_evaluations=[primary],
-    )
-
-    assert len(evaluations) == 1
-    assert evaluations[0]["pass_label"] == "layout_quality_right_edge"
-    assert evaluations[0]["selected"] is True
-    assert evaluations[0]["columns"] == ["Date", "Description", "Debit", "Credit", "Balance"]
 
 
 def test_parse_pdf_uses_full_page_ocr_when_layout_finds_no_tables(monkeypatch):

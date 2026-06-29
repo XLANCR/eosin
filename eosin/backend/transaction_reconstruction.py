@@ -284,6 +284,23 @@ def _has_continuation_content(values: dict[object, str]) -> bool:
     return _has_meaningful_text(values) or _has_money(values)
 
 
+def _has_text_overlap(
+    left: dict[object, str],
+    right: dict[object, str],
+) -> bool:
+    left_values = [value for role in ("text", "reference") for _, value in _role_values(left, role)]
+    right_values = [value for role in ("text", "reference") for _, value in _role_values(right, role)]
+    for left_value in left_values:
+        normalized_left = _NON_ALNUM_RE.sub("", left_value.lower())
+        for right_value in right_values:
+            normalized_right = _NON_ALNUM_RE.sub("", right_value.lower())
+            if min(len(normalized_left), len(normalized_right)) < 6:
+                continue
+            if normalized_left in normalized_right or normalized_right in normalized_left:
+                return True
+    return False
+
+
 def _money_decimal(value: object) -> Decimal | None:
     text = _clean_value(value).lower()
     if not text or text == "-":
@@ -330,6 +347,33 @@ def _resolve_single_amount_direction(
     resolved = dict(values)
     resolved[target_columns[0]] = amount_text
     resolved[amount_column] = ""
+    return resolved, True
+
+
+def _derive_missing_balance(
+    values: dict[object, str],
+    previous_balance: Decimal | None,
+) -> tuple[dict[object, str], bool]:
+    if previous_balance is None or _role_values(values, "balance"):
+        return values, False
+    balance_columns = [column for column in values if _header_role(column) == "balance"]
+    debit_values = _role_values(values, "debit")
+    credit_values = _role_values(values, "credit")
+    if not balance_columns or bool(debit_values) == bool(credit_values):
+        return values, False
+    amount_values = debit_values or credit_values
+    if len(amount_values) != 1:
+        return values, False
+    amount = _money_decimal(amount_values[0][1])
+    if amount is None or amount < 0:
+        return values, False
+    current_balance = (
+        previous_balance - amount
+        if debit_values
+        else previous_balance + amount
+    )
+    resolved = dict(values)
+    resolved[balance_columns[0]] = f"{current_balance:.2f}"
     return resolved, True
 
 
@@ -427,6 +471,67 @@ def _replayed_source_pages(
     return replayed
 
 
+def _replayed_source_rows(
+    frame: pd.DataFrame,
+    public_columns: Sequence[object],
+    replayed_pages: set[int],
+) -> set[tuple[int, int, int]]:
+    if SOURCE_PAGE_COLUMN not in frame.columns:
+        return set()
+    seen_signatures: set[tuple[str, Decimal]] = set()
+    latest_date: pd.Timestamp | None = None
+    replayed: set[tuple[int, int, int]] = set()
+    for page_value, page_rows in frame.groupby(SOURCE_PAGE_COLUMN, sort=True):
+        page_index = int(page_value)
+        if page_index in replayed_pages:
+            continue
+        records: list[tuple[pd.Timestamp, tuple[str, Decimal], tuple[int, int, int]]] = []
+        for _, row in page_rows.iterrows():
+            values = _row_values(row, public_columns)
+            resolved_date, _ = _resolve_date(row, public_columns)
+            parsed_date = pd.to_datetime(resolved_date, dayfirst=True, errors="coerce")
+            amounts = [
+                _money_decimal(value)
+                for role in ("debit", "credit", "amount")
+                for _, value in _role_values(values, role)
+            ]
+            amounts = [abs(amount) for amount in amounts if amount is not None]
+            if not resolved_date or pd.isna(parsed_date) or len(amounts) != 1:
+                continue
+            timestamp = pd.Timestamp(parsed_date)
+            source_id = (
+                page_index,
+                int(row.get(SOURCE_TABLE_COLUMN, 0)),
+                int(row.get(SOURCE_ROW_COLUMN, 0)),
+            )
+            records.append((timestamp, (timestamp.date().isoformat(), amounts[0]), source_id))
+
+        page_latest = max((record[0] for record in records), default=None)
+        candidates = [
+            record
+            for record in records[:3]
+            if latest_date is not None
+            and record[0] < latest_date
+            and record[1] in seen_signatures
+        ]
+        if (
+            latest_date is not None
+            and page_latest is not None
+            and page_latest > latest_date
+            and len(candidates) >= 2
+        ):
+            replayed.update(record[2] for record in candidates)
+
+        seen_signatures.update(
+            record[1]
+            for record in records
+            if record[2] not in replayed
+        )
+        if page_latest is not None:
+            latest_date = page_latest if latest_date is None else max(latest_date, page_latest)
+    return replayed
+
+
 def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionResult:
     non_empty_frames = [frame.copy() for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
     if not non_empty_frames:
@@ -438,7 +543,9 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             "rejected_unclassified_sources": 0,
             "generic_schema_frames_inferred": 0,
             "balance_resolved_amount_sources": 0,
+            "derived_balance_sources": 0,
             "replayed_source_pages": [],
+            "replayed_source_rows": [],
             "conservation_ok": True,
         }
         return ReconstructionResult(dataframe=pd.DataFrame(), diagnostics=diagnostics)
@@ -451,6 +558,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         combined[canonical_date_column] = ""
         public_columns.append(canonical_date_column)
     replayed_pages = _replayed_source_pages(combined, public_columns)
+    replayed_rows = _replayed_source_rows(combined, public_columns, replayed_pages)
 
     emitted_rows: list[dict[object, str]] = []
     emitted_source_count = 0
@@ -462,12 +570,23 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
     inherited_date = ""
     previous_balance: Decimal | None = None
     balance_resolved_amounts = 0
+    derived_balances = 0
 
-    for _, row in combined.iterrows():
+    ordered_rows = list(combined.iterrows())
+    for position, (_, row) in enumerate(ordered_rows):
         values = _row_values(row, public_columns)
         source_page = int(row.get(SOURCE_PAGE_COLUMN, -1))
+        source_id = (
+            source_page,
+            int(row.get(SOURCE_TABLE_COLUMN, 0)),
+            int(row.get(SOURCE_ROW_COLUMN, 0)),
+        )
         if source_page in replayed_pages:
             exclusions["replayed_source_page"] += 1
+            last_row_was_attachable = False
+            continue
+        if source_id in replayed_rows:
+            exclusions["replayed_source_row"] += 1
             last_row_was_attachable = False
             continue
         reason = _non_transaction_reason(values)
@@ -478,6 +597,8 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
 
         values, amount_was_resolved = _resolve_single_amount_direction(values, previous_balance)
         balance_resolved_amounts += int(amount_was_resolved)
+        values, balance_was_derived = _derive_missing_balance(values, previous_balance)
+        derived_balances += int(balance_was_derived)
 
         resolved_date, _ = _resolve_date(row, public_columns)
         if resolved_date:
@@ -501,6 +622,21 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             inherited_date = resolved_date
             last_row_was_attachable = True
             continue
+
+        if _has_money(values) and position + 1 < len(ordered_rows):
+            next_row = ordered_rows[position + 1][1]
+            next_page = int(next_row.get(SOURCE_PAGE_COLUMN, -1))
+            next_date, _ = _resolve_date(next_row, public_columns)
+            next_values = _row_values(next_row, public_columns)
+            if (
+                next_page == source_page
+                and next_page not in replayed_pages
+                and next_date
+                and _has_text_overlap(values, next_values)
+            ):
+                pending_fragments.append(values)
+                last_row_was_attachable = False
+                continue
 
         if _has_independent_transaction_structure(values) and inherited_date:
             current = dict(values)
@@ -545,7 +681,12 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         "rejected_unclassified_sources": rejected_count,
         "generic_schema_frames_inferred": inferred_schema_count,
         "balance_resolved_amount_sources": balance_resolved_amounts,
+        "derived_balance_sources": derived_balances,
         "replayed_source_pages": sorted(replayed_pages),
+        "replayed_source_rows": [
+            {"page": page, "row": row, "table": table}
+            for page, table, row in sorted(replayed_rows)
+        ],
         "exclusion_reasons": dict(sorted(exclusions.items())),
         "rejection_reasons": dict(sorted(rejections.items())),
         "conservation_ok": selected
