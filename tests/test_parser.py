@@ -1,7 +1,11 @@
-from eosin.parser import Parser
 import pytest
 from os import system
 from pandas import DataFrame
+
+try:
+    from eosin.parser import Parser
+except ModuleNotFoundError:
+    pytest.skip("legacy eosin.parser was retired by the evidence-service migration", allow_module_level=True)
 
 
 @pytest.fixture

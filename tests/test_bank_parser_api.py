@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import sys
 import types
 from pathlib import Path
@@ -23,7 +24,15 @@ class BankStatementParser:
 
 
 pipeline_stub.BankStatementParser = BankStatementParser
-sys.modules.setdefault("eosin.backend.eosin_pipeline", pipeline_stub)
+_original_pipeline = sys.modules.get("eosin.backend.eosin_pipeline")
+sys.modules["eosin.backend.eosin_pipeline"] = pipeline_stub
+try:
+    importlib.import_module("eosin.backend.bank_parser_api")
+finally:
+    if _original_pipeline is None:
+        sys.modules.pop("eosin.backend.eosin_pipeline", None)
+    else:
+        sys.modules["eosin.backend.eosin_pipeline"] = _original_pipeline
 
 
 class FakeService:

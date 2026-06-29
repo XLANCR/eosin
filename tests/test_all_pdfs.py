@@ -16,11 +16,15 @@ import traceback
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 # Ensure the package root is importable when running standalone
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eosin.parser import Parser  # noqa: E402
+try:
+    from eosin.parser import Parser  # noqa: E402
+except ModuleNotFoundError:
+    pytest.skip("legacy eosin.parser was retired by the evidence-service migration", allow_module_level=True)
 
 TEST_PDFS_DIR = Path(__file__).resolve().parent / "test_pdfs"
 

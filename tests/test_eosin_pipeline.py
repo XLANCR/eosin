@@ -15,6 +15,10 @@ API_PATH = ROOT / "eosin" / "backend" / "bank_parser_api.py"
 TRANSACTION_RECONSTRUCTION_PATH = ROOT / "eosin" / "backend" / "transaction_reconstruction.py"
 
 
+def _is_stubbed_runtime_module(name: str) -> bool:
+    return name == "torch" or name.startswith(("eosin", "glmocr"))
+
+
 class DummyLayoutDetector:
     def __init__(self, config):
         self.config = config
@@ -158,17 +162,27 @@ def _install_stub_modules(detector_factory) -> None:
 
 
 def _load_runtime_modules(detector_factory=DummyLayoutDetector):
-    _install_stub_modules(detector_factory)
-    _load_module(
-        "eosin.backend.transaction_reconstruction",
-        TRANSACTION_RECONSTRUCTION_PATH,
-    )
-    pipeline_module = _load_module("eosin.backend.eosin_pipeline", PIPELINE_PATH)
-    service_module = _load_module("eosin.backend.bank_parser_service", SERVICE_PATH)
-    api_module = _load_module(
-        f"test_bank_parser_api_module_{uuid.uuid4().hex}",
-        API_PATH,
-    )
+    original = {
+        name: module
+        for name, module in sys.modules.items()
+        if _is_stubbed_runtime_module(name)
+    }
+    try:
+        _install_stub_modules(detector_factory)
+        _load_module(
+            "eosin.backend.transaction_reconstruction",
+            TRANSACTION_RECONSTRUCTION_PATH,
+        )
+        pipeline_module = _load_module("eosin.backend.eosin_pipeline", PIPELINE_PATH)
+        service_module = _load_module("eosin.backend.bank_parser_service", SERVICE_PATH)
+        api_module = _load_module(
+            f"test_bank_parser_api_module_{uuid.uuid4().hex}",
+            API_PATH,
+        )
+    finally:
+        for name in [name for name in sys.modules if _is_stubbed_runtime_module(name)]:
+            sys.modules.pop(name, None)
+        sys.modules.update(original)
     return pipeline_module, service_module, api_module
 
 
