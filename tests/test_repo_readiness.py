@@ -85,8 +85,8 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_ALLOW_ALWAYS_ON=false" in env_example
     assert "EOSIN_MODAL_MAX_CONTAINERS=3" in env_example
     assert "EOSIN_MODAL_REQUIRES_PROXY_AUTH=true" in env_example
-    assert "EOSIN_MODAL_MAX_INPUTS=4" in env_example
-    assert "EOSIN_MODAL_TARGET_INPUTS=4" in env_example
+    assert "EOSIN_MODAL_MAX_INPUTS=35" in env_example
+    assert "EOSIN_MODAL_TARGET_INPUTS=35" in env_example
     assert "EOSIN_MODAL_SCALEDOWN_WINDOW=120" in env_example
     assert "EOSIN_MODAL_STARTUP_TIMEOUT=900" in env_example
     assert "EOSIN_MODAL_MEMORY_MIB=32768" in env_example
@@ -114,7 +114,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "BANK_PARSER_CAPTURE_RAW_OCR_DEBUG=false" in env_example
     assert "BANK_PARSER_MAX_UPLOAD_BYTES" not in env_example
     assert "BANK_PARSER_MAX_PAGES" not in env_example
-    assert "BANK_PARSER_POOL_WAIT_TIMEOUT=30" in env_example
+    assert "BANK_PARSER_POOL_WAIT_TIMEOUT=1800" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_SIDE=3500" in env_example
     assert "BANK_PARSER_OCR_MAX_IMAGE_PIXELS=9000000" in env_example
     assert "BANK_PARSER_OCR_DOCUMENT_MAX_TOKENS_CAP=4096" in env_example
@@ -478,9 +478,18 @@ def test_modal_concurrency_is_bounded_to_measured_capacity() -> None:
     modal_app = Path("modal_app.py").read_text()
 
     assert "def _bounded_modal_inputs() -> tuple[int, int]:" in modal_app
-    assert "safe_max_inputs = 4" in modal_app
+    assert "safe_max_inputs = 35" in modal_app
     assert 'MAX_INPUTS, TARGET_INPUTS = _bounded_modal_inputs()' in modal_app
     assert 'min(_env_int("EOSIN_MODAL_TARGET_INPUTS", max_inputs), max_inputs)' in modal_app
+
+
+def test_modal_startup_logs_readiness_critical_phases() -> None:
+    modal_app = Path("modal_app.py").read_text()
+
+    assert "vLLM health ready after" in modal_app
+    assert "vLLM cache commit phase completed in" in modal_app
+    assert "Parser service construction completed in" in modal_app
+    assert "Restore phase completed in" in modal_app
 
 
 def test_modal_extract_evidence_uses_direct_evidence_only_service_path() -> None:

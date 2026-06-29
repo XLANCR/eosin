@@ -39,6 +39,13 @@ class BankParserResult:
         }
 
 
+@dataclass(frozen=True)
+class ParserLease:
+    parser: impl.BankStatementParser
+    queue_wait_seconds: float
+    queue_depth_at_submit: int
+
+
 class BankParserService:
     """Server-side wrapper around the bank statement parser script."""
 
@@ -62,7 +69,7 @@ class BankParserService:
         capture_raw_ocr_debug: Optional[bool] = None,
         page_ocr_retry_dpi: Optional[int] = None,
         parser_pool_size: int = 1,
-        parser_pool_wait_timeout: float = 30.0,
+        parser_pool_wait_timeout: float = 1800.0,
         backend_startup_timeout: float = 180.0,
         backend_retry_interval: float = 5.0,
     ):
@@ -106,6 +113,8 @@ class BankParserService:
         self._parser_pool_size = max(1, int(parser_pool_size))
         self._parser_pool_wait_timeout = max(0.01, float(parser_pool_wait_timeout))
         self._parser_pool: queue.Queue[impl.BankStatementParser] = queue.Queue(maxsize=self._parser_pool_size)
+        self._admission_lock = threading.Lock()
+        self._waiting_requests = 0
         self._parsers: list[impl.BankStatementParser] = []
         self._closed = False
         self._apply_impl_settings()
@@ -139,20 +148,34 @@ class BankParserService:
             self._parser_pool.put(parser)
 
     @contextmanager
-    def _borrow_parser(self) -> Iterator[impl.BankStatementParser]:
+    def _borrow_parser(self) -> Iterator[ParserLease]:
+        submitted_at = time.monotonic()
+        with self._admission_lock:
+            queue_depth_at_submit = self._waiting_requests + (
+                1 if self._parser_pool.qsize() == 0 else 0
+            )
+            self._waiting_requests += 1
         try:
             parser = self._parser_pool.get(timeout=self._parser_pool_wait_timeout)
         except queue.Empty as exc:
             raise TimeoutError(
                 f"Timed out waiting for parser pool slot after {self._parser_pool_wait_timeout:.2f}s"
             ) from exc
+        finally:
+            with self._admission_lock:
+                self._waiting_requests -= 1
+        lease = ParserLease(
+            parser=parser,
+            queue_wait_seconds=time.monotonic() - submitted_at,
+            queue_depth_at_submit=queue_depth_at_submit,
+        )
         try:
-            yield parser
+            yield lease
         finally:
             self._parser_pool.put(parser)
 
     def is_ready(self) -> bool:
-        return not self._closed and bool(self._parsers) and self._parser_pool.qsize() > 0
+        return not self._closed and bool(self._parsers)
 
     @staticmethod
     def _json_safe_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -167,7 +190,8 @@ class BankParserService:
         pdf_path = Path(pdf_path)
         started_at = time.time()
 
-        with self._borrow_parser() as parser:
+        with self._borrow_parser() as lease:
+            parser = lease.parser
             df = parser.parse_pdf(str(pdf_path))
             parser_stats = dict(getattr(parser, "last_run_stats", {}) or {})
 
@@ -194,12 +218,17 @@ class BankParserService:
                     str(name): float(value)
                     for name, value in parser_stats.get("timings", {}).items()
                 },
+                "parser_queue_wait": round(lease.queue_wait_seconds, 6),
                 "service_total": round(time.time() - started_at, 3),
             },
             debug={
-                key: value
-                for key, value in parser_stats.items()
-                if key != "timings" and key != "pages_with_tables"
+                **{
+                    key: value
+                    for key, value in parser_stats.items()
+                    if key != "timings" and key != "pages_with_tables"
+                },
+                "parser_queue_depth_at_submit": lease.queue_depth_at_submit,
+                "parser_pool_size": self._parser_pool_size,
             },
         )
 
@@ -254,7 +283,8 @@ class BankParserService:
                 if 1 <= int(page_number) <= page_count
             ]
 
-            with self._borrow_parser() as parser:
+            with self._borrow_parser() as lease:
+                parser = lease.parser
                 render_dpi = int(dpi or parser.pdf_dpi)
                 render_started_at = time.time()
                 rendered_pages = parser._render_specific_pages(str(temp_path), page_indices, render_dpi)
@@ -311,6 +341,7 @@ class BankParserService:
                 "timings": {
                     "render_pages": round(render_seconds, 3),
                     "ocr_pages": round(ocr_seconds, 3),
+                    "parser_queue_wait": round(lease.queue_wait_seconds, 6),
                     "service_total": round(time.time() - started_at, 3),
                 },
                 "ocr_metrics": ocr_metrics,

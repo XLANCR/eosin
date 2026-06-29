@@ -27,7 +27,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _bounded_modal_inputs() -> tuple[int, int]:
-    safe_max_inputs = 4
+    safe_max_inputs = 35
     max_inputs = max(1, min(_env_int("EOSIN_MODAL_MAX_INPUTS", safe_max_inputs), safe_max_inputs))
     target_inputs = max(1, min(_env_int("EOSIN_MODAL_TARGET_INPUTS", max_inputs), max_inputs))
     return max_inputs, target_inputs
@@ -356,7 +356,7 @@ class BankParserModalApp:
             page_ocr_retry_dpi=PAGE_OCR_RETRY_DPI,
             capture_raw_ocr_debug=CAPTURE_RAW_OCR_DEBUG,
             parser_pool_size=PARSER_POOL_SIZE,
-            parser_pool_wait_timeout=float(os.getenv("BANK_PARSER_POOL_WAIT_TIMEOUT", "30")),
+            parser_pool_wait_timeout=float(os.getenv("BANK_PARSER_POOL_WAIT_TIMEOUT", "1800")),
             backend_startup_timeout=60.0,
             backend_retry_interval=1.0,
         )
@@ -422,11 +422,18 @@ class BankParserModalApp:
         )
         print(f"vLLM startup phase completed in {time.monotonic() - started_at:.3f}s", flush=True)
         if VLLM_COMMIT_CACHE_AFTER_START:
+            cache_commit_started_at = time.monotonic()
             try:
                 hf_cache_volume.commit()
                 vllm_cache_volume.commit()
             except Exception as exc:  # pragma: no cover - best-effort cache persistence
                 print(f"Volume cache commit failed after vLLM start: {exc}", flush=True)
+            finally:
+                print(
+                    "vLLM cache commit phase completed in "
+                    f"{time.monotonic() - cache_commit_started_at:.3f}s",
+                    flush=True,
+                )
 
     def _prepare_runtime(self) -> None:
         prepare_started_at = time.monotonic()
@@ -448,7 +455,13 @@ class BankParserModalApp:
         if TAILSCALE_ENABLE:
             self.tailscale_process, _ = _start_tailscale()
         self._start_vllm()
+        parser_service_started_at = time.monotonic()
         self._build_parser_service()
+        print(
+            "Parser service construction completed in "
+            f"{time.monotonic() - parser_service_started_at:.3f}s",
+            flush=True,
+        )
         print(f"Restore phase completed in {time.monotonic() - enter_started_at:.3f}s", flush=True)
 
     @modal.exit()

@@ -76,6 +76,32 @@ class FakeDirectOCRParser(FakeParser):
         }
 
 
+class CountingParser:
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def __init__(self, parser_id: int) -> None:
+        self.parser_id = parser_id
+        self.layout_guard = None
+        self.last_run_stats: dict[str, object] = {}
+
+    def parse_pdf(self, pdf_path: str) -> pd.DataFrame:
+        with self.lock:
+            type(self).active += 1
+            type(self).maximum_active = max(type(self).maximum_active, type(self).active)
+        try:
+            time.sleep(0.02)
+            self.last_run_stats = {"pages_with_tables": [], "timings": {"ocr_tables": 0.01}}
+            return pd.DataFrame([{"source": Path(pdf_path).name}])
+        finally:
+            with self.lock:
+                type(self).active -= 1
+
+    def close(self) -> None:
+        return None
+
+
 def test_bank_parser_service_uses_parser_pool_for_concurrent_requests(monkeypatch, tmp_path) -> None:
     barrier = threading.Barrier(2)
     created: list[FakeParser] = []
@@ -132,7 +158,49 @@ def test_borrow_parser_times_out_when_pool_is_saturated(monkeypatch) -> None:
         service.close()
 
 
-def test_service_readiness_reflects_saturation_and_close(monkeypatch) -> None:
+def test_service_admits_35_requests_behind_two_parser_slots(monkeypatch, tmp_path) -> None:
+    CountingParser.active = 0
+    CountingParser.maximum_active = 0
+    created: list[CountingParser] = []
+
+    def fake_build_parser(self):
+        parser = CountingParser(len(created) + 1)
+        created.append(parser)
+        return parser
+
+    monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
+    service = BankParserService(parser_pool_size=2)
+    start = threading.Barrier(35)
+    results = []
+    errors = []
+
+    def parse(index: int) -> None:
+        path = tmp_path / f"statement-{index}.pdf"
+        path.write_bytes(b"not a real pdf")
+        start.wait(timeout=5)
+        try:
+            results.append(service.parse_pdf(path))
+        except Exception as exc:  # pragma: no cover - assertion captures details
+            errors.append(exc)
+
+    threads = [threading.Thread(target=parse, args=(index,)) for index in range(35)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    try:
+        assert errors == []
+        assert len(results) == 35
+        assert CountingParser.maximum_active == 2
+        assert service._parser_pool_wait_timeout == 1800.0
+        assert max(result.timings["parser_queue_wait"] for result in results) > 0
+        assert max(result.debug["parser_queue_depth_at_submit"] for result in results) >= 1
+    finally:
+        service.close()
+
+
+def test_service_readiness_reflects_lifecycle_not_temporary_saturation(monkeypatch) -> None:
     created: list[FakeParser] = []
 
     def fake_build_parser(self):
@@ -146,7 +214,7 @@ def test_service_readiness_reflects_saturation_and_close(monkeypatch) -> None:
 
     borrowed = service._parser_pool.get_nowait()
     try:
-        assert service.is_ready() is False
+        assert service.is_ready() is True
     finally:
         service._parser_pool.put(borrowed)
 
