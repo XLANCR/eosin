@@ -54,6 +54,94 @@ def test_coalesces_date_columns_before_classifying_transactions() -> None:
     assert result.diagnostics["emitted_transaction_sources"] == 2
 
 
+def test_coalesces_equivalent_schema_families_without_sparse_columns() -> None:
+    frames = [
+        source_frame(
+            0,
+            [
+                {
+                    "Date": "01/01/2024",
+                    "Narration": "FIRST PAYMENT",
+                    "Chg/Ref.No.": "REF1",
+                    "Value Dt": "01/01/2024",
+                    "Withdrawal Anti.": "10.00",
+                    "Deposit Amt.": "",
+                    "Closing Balance": "90.00",
+                }
+            ],
+        ),
+        source_frame(
+            1,
+            [
+                {
+                    "Transaction Date": "02/01/2024",
+                    "Description": "SECOND PAYMENT",
+                    "Reference": "REF2",
+                    "Value Date": "02/01/2024",
+                    "Debit": "",
+                    "Credit": "5.00",
+                    "Balance": "95.00",
+                }
+            ],
+        ),
+    ]
+
+    result = reconstruct_transactions(frames)
+
+    assert list(result.dataframe.columns) == [
+        "Date",
+        "Narration",
+        "Chg/Ref.No.",
+        "Value Dt",
+        "Withdrawal Anti.",
+        "Deposit Amt.",
+        "Closing Balance",
+    ]
+    assert list(result.dataframe["Date"]) == ["01/01/2024", "02/01/2024"]
+    assert list(result.dataframe["Narration"]) == ["FIRST PAYMENT", "SECOND PAYMENT"]
+
+
+def test_resolves_single_amount_direction_from_running_balance() -> None:
+    frames = [
+        source_frame(
+            0,
+            [
+                {
+                    "Date": "01/01/2024",
+                    "Narration": "OPENING TRANSACTION",
+                    "Withdrawal": "",
+                    "Deposit": "100.00",
+                    "Closing Balance": "100.00",
+                }
+            ],
+        ),
+        source_frame(
+            1,
+            [
+                {
+                    "Transaction Date": "02/01/2024",
+                    "Description": "PURCHASE",
+                    "Amount": "10.00",
+                    "Balance": "90.00",
+                },
+                {
+                    "Transaction Date": "03/01/2024",
+                    "Description": "REFUND",
+                    "Amount": "50.00",
+                    "Balance": "140.00",
+                },
+            ],
+        ),
+    ]
+
+    result = reconstruct_transactions(frames)
+
+    assert "Amount" not in result.dataframe.columns
+    assert list(result.dataframe["Withdrawal"]) == ["", "10.00", ""]
+    assert list(result.dataframe["Deposit"]) == ["100.00", "", "50.00"]
+    assert result.diagnostics["balance_resolved_amount_sources"] == 2
+
+
 def test_accepts_transaction_date_with_time_suffix() -> None:
     frame = source_frame(
         0,
@@ -263,6 +351,30 @@ def test_rejects_ambiguous_undated_row_without_emitting_it() -> None:
     assert result.diagnostics["rejected_unclassified_sources"] == 1
 
 
+def test_rejects_dated_statement_period_row_without_money_or_description() -> None:
+    frame = source_frame(
+        0,
+        [
+            {
+                "Transaction Date": "01/09/2020",
+                "Description": "01/09/2020",
+                "Reference": "To",
+                "Value Date": "01/02/2021",
+                "Debit": "",
+                "Credit": "",
+                "Balance": "",
+            }
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert result.dataframe.empty
+    assert result.diagnostics["rejection_reasons"] == {
+        "dated_without_transaction_evidence": 1
+    }
+
+
 def test_excludes_summaries_and_repeated_headers() -> None:
     frame = source_frame(
         0,
@@ -301,6 +413,37 @@ def test_preserves_identical_legitimate_transactions() -> None:
 
     assert len(result.dataframe) == 2
     assert result.diagnostics["emitted_transaction_sources"] == 2
+
+
+def test_excludes_short_replayed_source_page_after_date_regression() -> None:
+    frames = [
+        source_frame(
+            0,
+            [
+                {"Date": "01/01/2024", "Description": "A", "Debit": "10.00", "Balance": "90.00"},
+                {"Date": "01/01/2024", "Description": "B", "Debit": "20.00", "Balance": "70.00"},
+            ],
+        ),
+        source_frame(
+            1,
+            [
+                {"Date": "02/01/2024", "Description": "C", "Credit": "30.00", "Balance": "100.00"},
+            ],
+        ),
+        source_frame(
+            2,
+            [
+                {"Date": "01/01/2024", "Description": "A OCR REPLAY", "Debit": "10.00", "Balance": "90.00"},
+                {"Date": "01/01/2024", "Description": "B OCR REPLAY", "Debit": "20.00", "Balance": "70.00"},
+            ],
+        ),
+    ]
+
+    result = reconstruct_transactions(frames)
+
+    assert len(result.dataframe) == 3
+    assert result.diagnostics["exclusion_reasons"]["replayed_source_page"] == 2
+    assert result.diagnostics["replayed_source_pages"] == [2]
 
 
 def test_accounts_for_every_selected_source_row() -> None:

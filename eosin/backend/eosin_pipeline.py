@@ -351,11 +351,44 @@ def _infer_headerless_bank_columns(rows: Sequence[Sequence[str]]) -> Optional[Li
         return bool(text and not is_date_like(text) and not _cell_is_amount_like(text))
 
     if ncols == 7:
+        hdfc_text_hits = sum(1 for row in candidate_rows if text_like(row[1]))
+        value_date_hits = sum(1 for row in candidate_rows if is_date_like(row[3]))
+        hdfc_money_hits = sum(
+            1
+            for row in candidate_rows
+            if any(_cell_is_amount_like(row[index]) for index in (4, 5, 6))
+        )
+        if hdfc_text_hits and value_date_hits and hdfc_money_hits:
+            return [
+                "Transaction Date",
+                "Description",
+                "Reference",
+                "Value Date",
+                "Debit",
+                "Credit",
+                "Balance",
+            ]
         text_hits = sum(1 for row in candidate_rows if text_like(row[2]))
         money_hits = sum(1 for row in candidate_rows if any(_cell_is_amount_like(row[index]) for index in (3, 4, 5)))
         if text_hits and money_hits:
             return ["Tran Date", "col_1", "Particulars", "Debit", "Credit", "Balance", "Init. Br"]
     elif ncols == 6:
+        hdfc_text_hits = sum(1 for row in candidate_rows if text_like(row[1]))
+        value_date_hits = sum(1 for row in candidate_rows if is_date_like(row[3]))
+        hdfc_money_hits = sum(
+            1
+            for row in candidate_rows
+            if _cell_is_amount_like(row[4]) and _cell_is_amount_like(row[5])
+        )
+        if hdfc_text_hits and value_date_hits and hdfc_money_hits:
+            return [
+                "Transaction Date",
+                "Description",
+                "Reference",
+                "Value Date",
+                "Amount",
+                "Balance",
+            ]
         text_hits = sum(1 for row in candidate_rows if text_like(row[1]))
         money_hits = sum(1 for row in candidate_rows if any(_cell_is_amount_like(row[index]) for index in (2, 3, 4)))
         if text_hits and money_hits:
@@ -819,7 +852,15 @@ def parse_html_table(
         if sum(1 for kw in valid_keywords if kw in first_row_lower) >= 2:
             header_row = rows.pop(0)
 
-    inferred_headers = None if expected_headers or header_row else _infer_headerless_bank_columns(rows)
+    inferred_headers = None if header_row else _infer_headerless_bank_columns(rows)
+    if (
+        inferred_headers
+        and expected_headers
+        and len(inferred_headers) != len(expected_headers)
+        and "Reference" in inferred_headers
+        and "Value Date" in inferred_headers
+    ):
+        expected_headers = None
 
     if expected_headers:
         ncols = len(expected_headers)

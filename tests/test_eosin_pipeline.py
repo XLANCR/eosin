@@ -356,6 +356,65 @@ def test_parse_html_table_keeps_transaction_thead_as_data_and_infers_axis_column
     assert dataframe.iloc[0]["Init. Br"] == "227"
 
 
+def test_parse_html_table_infers_hdfc_headerless_transaction_columns():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <tr><td>02/09/20</td><td>NWD CASH WITHDRAWAL</td><td>000024611012483</td><td>02/09/20</td><td>4,000.00</td><td></td><td>16,158.66</td></tr>
+          <tr><td>03/09/20</td><td>SALARY CREDIT</td><td>000000000000002</td><td>03/09/20</td><td></td><td>24,690.00</td><td>40,848.66</td></tr>
+        </table>
+        """
+    )
+
+    assert list(dataframe.columns) == [
+        "Transaction Date",
+        "Description",
+        "Reference",
+        "Value Date",
+        "Debit",
+        "Credit",
+        "Balance",
+    ]
+    assert dataframe.iloc[0]["Description"] == "NWD CASH WITHDRAWAL"
+    assert dataframe.iloc[0]["Reference"] == "000024611012483"
+    assert dataframe.iloc[0]["Debit"] == "4,000.00"
+
+
+def test_parse_html_table_infers_hdfc_single_amount_columns():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <tr><td>09/10/20</td><td>AUTOPAY</td><td>00000029053940</td><td>09/10/20</td><td>2,848.00</td><td>4,373.34</td></tr>
+          <tr><td>31/10/20</td><td>SALARY CREDIT</td><td>000000000000002</td><td>31/10/20</td><td>26,342.00</td><td>26,475.34</td></tr>
+        </table>
+        """,
+        expected_headers=[
+            "Date",
+            "Narration",
+            "Chg/Ref.No.",
+            "Value Dt",
+            "Withdrawal Anti.",
+            "Deposit Amt.",
+            "Closing Balance",
+        ],
+    )
+
+    assert list(dataframe.columns) == [
+        "Transaction Date",
+        "Description",
+        "Reference",
+        "Value Date",
+        "Amount",
+        "Balance",
+    ]
+    assert dataframe.iloc[0]["Amount"] == "2,848.00"
+    assert dataframe.iloc[0]["Balance"] == "4,373.34"
+
+
 def test_parse_html_table_names_blank_axis_date_header_from_row_shape():
     module = _load_eosin_pipeline_module()
 

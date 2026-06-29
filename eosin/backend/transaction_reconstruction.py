@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from math import ceil
 from typing import Any, Sequence
 
@@ -86,6 +87,13 @@ def _header_role(column: object) -> str:
 
 def _semantic_header_key(column: object) -> str:
     normalized = re.sub(r"\d+$", "", _normalized_header(column))
+    if normalized in {"valuedt", "valuedate"}:
+        return "value_date"
+    if "date" in normalized:
+        return "value_date" if "value" in normalized else "transaction_date"
+    role = _header_role(column)
+    if role in {"text", "reference", "debit", "credit", "balance", "amount", "serial"}:
+        return role
     if normalized in {"debt", "debtdr", "debit", "debitdr", "withdrawal", "withdrawals"}:
         return "debit"
     if normalized in {"credit", "creditcr", "cr", "deposit", "deposits"}:
@@ -252,7 +260,7 @@ def _role_values(values: dict[object, str], role: str) -> list[tuple[object, str
 
 def _has_meaningful_text(values: dict[object, str]) -> bool:
     candidates = _role_values(values, "text") + _role_values(values, "reference")
-    return any(len(_NON_ALNUM_RE.sub("", value.lower())) >= 3 for _, value in candidates)
+    return any(sum(character.isalpha() for character in value) >= 3 for _, value in candidates)
 
 
 def _has_money(values: dict[object, str]) -> bool:
@@ -274,6 +282,55 @@ def _has_independent_transaction_structure(values: dict[object, str]) -> bool:
 
 def _has_continuation_content(values: dict[object, str]) -> bool:
     return _has_meaningful_text(values) or _has_money(values)
+
+
+def _money_decimal(value: object) -> Decimal | None:
+    text = _clean_value(value).lower()
+    if not text or text == "-":
+        return None
+    negative = text.startswith("-") or text.endswith("dr") or (text.startswith("(") and text.endswith(")"))
+    normalized = re.sub(r"[^0-9.]", "", text)
+    if not normalized or normalized.count(".") > 1:
+        return None
+    try:
+        amount = Decimal(normalized)
+    except InvalidOperation:
+        return None
+    return -amount if negative else amount
+
+
+def _first_role_decimal(values: dict[object, str], role: str) -> Decimal | None:
+    for _, value in _role_values(values, role):
+        parsed = _money_decimal(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _resolve_single_amount_direction(
+    values: dict[object, str],
+    previous_balance: Decimal | None,
+) -> tuple[dict[object, str], bool]:
+    if previous_balance is None or _role_values(values, "debit") or _role_values(values, "credit"):
+        return values, False
+    amount_values = _role_values(values, "amount")
+    current_balance = _first_role_decimal(values, "balance")
+    if len(amount_values) != 1 or current_balance is None:
+        return values, False
+    amount_column, amount_text = amount_values[0]
+    amount = _money_decimal(amount_text)
+    if amount is None:
+        return values, False
+
+    delta = current_balance - previous_balance
+    target_role = "credit" if delta == amount else "debit" if delta == -amount else None
+    target_columns = [column for column in values if _header_role(column) == target_role]
+    if not target_columns:
+        return values, False
+    resolved = dict(values)
+    resolved[target_columns[0]] = amount_text
+    resolved[amount_column] = ""
+    return resolved, True
 
 
 def _merge_continuation(target: dict[object, str], fragment: dict[object, str]) -> bool:
@@ -330,6 +387,46 @@ def _coalesce_semantic_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return merged.drop(columns=drop_columns) if drop_columns else merged
 
 
+def _replayed_source_pages(
+    frame: pd.DataFrame,
+    public_columns: Sequence[object],
+) -> set[int]:
+    if SOURCE_PAGE_COLUMN not in frame.columns:
+        return set()
+    seen_signatures: set[tuple[str, Decimal]] = set()
+    latest_date: pd.Timestamp | None = None
+    replayed: set[int] = set()
+    for page_value, page_rows in frame.groupby(SOURCE_PAGE_COLUMN, sort=True):
+        signatures: list[tuple[str, Decimal]] = []
+        dates: list[pd.Timestamp] = []
+        for _, row in page_rows.iterrows():
+            resolved_date, _ = _resolve_date(row, public_columns)
+            balance = _first_role_decimal(_row_values(row, public_columns), "balance")
+            parsed_date = pd.to_datetime(resolved_date, dayfirst=True, errors="coerce")
+            if not resolved_date or balance is None or pd.isna(parsed_date):
+                continue
+            timestamp = pd.Timestamp(parsed_date)
+            signatures.append((timestamp.date().isoformat(), balance))
+            dates.append(timestamp)
+        overlap = sum(signature in seen_signatures for signature in signatures)
+        overlap_threshold = max(2, ceil(len(signatures) * 0.67))
+        is_replay = (
+            len(page_rows) <= 5
+            and len(signatures) >= 2
+            and overlap >= overlap_threshold
+            and latest_date is not None
+            and max(dates) < latest_date
+        )
+        if is_replay:
+            replayed.add(int(page_value))
+            continue
+        seen_signatures.update(signatures)
+        if dates:
+            page_latest = max(dates)
+            latest_date = page_latest if latest_date is None else max(latest_date, page_latest)
+    return replayed
+
+
 def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionResult:
     non_empty_frames = [frame.copy() for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
     if not non_empty_frames:
@@ -340,6 +437,8 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             "excluded_non_transaction_sources": 0,
             "rejected_unclassified_sources": 0,
             "generic_schema_frames_inferred": 0,
+            "balance_resolved_amount_sources": 0,
+            "replayed_source_pages": [],
             "conservation_ok": True,
         }
         return ReconstructionResult(dataframe=pd.DataFrame(), diagnostics=diagnostics)
@@ -347,10 +446,11 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
     inferred_frames, inferred_schema_count = _infer_generic_schemas(non_empty_frames)
     combined = _coalesce_semantic_columns(_ordered_combined_frame(inferred_frames))
     public_columns = [column for column in combined.columns if column not in SOURCE_COLUMNS]
-    canonical_date_column = _canonical_date_column(inferred_frames)
+    canonical_date_column = _canonical_date_column([combined])
     if canonical_date_column not in combined.columns:
         combined[canonical_date_column] = ""
         public_columns.append(canonical_date_column)
+    replayed_pages = _replayed_source_pages(combined, public_columns)
 
     emitted_rows: list[dict[object, str]] = []
     emitted_source_count = 0
@@ -360,14 +460,24 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
     pending_fragments: list[dict[object, str]] = []
     last_row_was_attachable = False
     inherited_date = ""
+    previous_balance: Decimal | None = None
+    balance_resolved_amounts = 0
 
     for _, row in combined.iterrows():
         values = _row_values(row, public_columns)
+        source_page = int(row.get(SOURCE_PAGE_COLUMN, -1))
+        if source_page in replayed_pages:
+            exclusions["replayed_source_page"] += 1
+            last_row_was_attachable = False
+            continue
         reason = _non_transaction_reason(values)
         if reason:
             exclusions[reason] += 1
             last_row_was_attachable = False
             continue
+
+        values, amount_was_resolved = _resolve_single_amount_direction(values, previous_balance)
+        balance_resolved_amounts += int(amount_was_resolved)
 
         resolved_date, _ = _resolve_date(row, public_columns)
         if resolved_date:
@@ -385,6 +495,9 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             pending_fragments.clear()
             emitted_rows.append(current)
             emitted_source_count += 1
+            current_balance = _first_role_decimal(current, "balance")
+            if current_balance is not None:
+                previous_balance = current_balance
             inherited_date = resolved_date
             last_row_was_attachable = True
             continue
@@ -394,6 +507,9 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             current[canonical_date_column] = inherited_date
             emitted_rows.append(current)
             emitted_source_count += 1
+            current_balance = _first_role_decimal(current, "balance")
+            if current_balance is not None:
+                previous_balance = current_balance
             last_row_was_attachable = True
             continue
 
@@ -428,6 +544,8 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         "excluded_non_transaction_sources": excluded_count,
         "rejected_unclassified_sources": rejected_count,
         "generic_schema_frames_inferred": inferred_schema_count,
+        "balance_resolved_amount_sources": balance_resolved_amounts,
+        "replayed_source_pages": sorted(replayed_pages),
         "exclusion_reasons": dict(sorted(exclusions.items())),
         "rejection_reasons": dict(sorted(rejections.items())),
         "conservation_ok": selected
