@@ -156,6 +156,9 @@ image = (
             "BANK_PARSER_PARSE_TESTING": "false",
             "BANK_PARSER_ENABLE_OCR_BATCHING": "false",
             "BANK_PARSER_LAYOUT_MODE": os.getenv("BANK_PARSER_LAYOUT_MODE", "auto"),
+            "BANK_PARSER_RECOVER_LAYOUT_MISSED_PAGES": os.getenv(
+                "BANK_PARSER_RECOVER_LAYOUT_MISSED_PAGES", "true"
+            ),
             "BANK_PARSER_LAYOUT_MAX_CONCURRENCY": "1",
             "BANK_PARSER_OCR_PIPELINE_WORKERS": str(OCR_PIPELINE_WORKERS),
             "BANK_PARSER_OCR_PIPELINE_QUEUE_SIZE": str(OCR_PIPELINE_QUEUE_SIZE),

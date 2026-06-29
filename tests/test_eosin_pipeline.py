@@ -658,6 +658,99 @@ def test_materialize_selected_tables_attaches_source_provenance():
     assert list(frames[0]["__source_table"]) == [2, 2]
 
 
+def test_recovers_transaction_table_from_page_missed_by_layout(monkeypatch):
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+    page_images = [module.Image.new("RGB", (100, 100), "white") for _ in range(3)]
+    primary = parser._evaluate_page_ocr_result(
+        page_idx=0,
+        html_content="""
+        <table>
+          <tr><th>Date</th><th>Description</th><th>Debit</th><th>Balance</th></tr>
+          <tr><td>01/01/2024</td><td>FIRST</td><td>10.00</td><td>90.00</td></tr>
+        </table>
+        """,
+        expected_headers=None,
+        pass_label="primary",
+    )
+
+    def fake_ocr(images):
+        assert [page for page, _ in images] == [1, 2]
+        return [
+            (
+                1,
+                """
+                <table>
+                  <tr><td>02/01/2024</td><td>SECOND PAYMENT</td><td>20.00</td><td>70.00</td></tr>
+                </table>
+                """,
+            ),
+            (
+                2,
+                """
+                <table>
+                  <tr><td>Statement From</td><td>01/01/2024</td></tr>
+                  <tr><td>Account Number</td><td>123456789</td></tr>
+                </table>
+                """,
+            ),
+        ], {"task_count": 2.0}
+
+    monkeypatch.setattr(parser, "_normalize_ocr_image", lambda image: image)
+    monkeypatch.setattr(parser, "_ocr_tables_parallel", fake_ocr)
+
+    evaluations, metrics = parser._recover_missing_layout_pages(
+        page_images=page_images,
+        table_bboxes=[[0, 0, 100, 100], None, None],
+        page_evaluations=[primary],
+    )
+
+    assert metrics["task_count"] == 2.0
+    assert [item["page_index"] for item in evaluations] == [0, 1, 2]
+    assert evaluations[1]["pass_label"] == "layout_miss_full_page"
+    assert evaluations[1]["selected"] is True
+    assert evaluations[2]["selected"] is False
+    assert "layout_miss_not_transaction_table" in evaluations[2]["reasons"]
+
+
+def test_parse_pdf_uses_full_page_ocr_when_layout_finds_no_tables(monkeypatch):
+    module = _load_eosin_pipeline_module()
+    parser = module.BankStatementParser.__new__(module.BankStatementParser)
+    parser.layout_detector = object()
+    parser.layout_mode = "required"
+    pages = [module.Image.new("RGB", (100, 100), "white") for _ in range(2)]
+    expected = pd.DataFrame([{"Date": "01/01/2024", "Description": "PAYMENT"}])
+    calls = []
+
+    monkeypatch.setattr(module, "pdf_to_images_pil", lambda _path, dpi: pages)
+    monkeypatch.setattr(parser, "_effective_pdf_dpi", lambda _path: 200)
+    monkeypatch.setattr(parser, "_run_layout_detection", lambda _pages: ([[], []], {}))
+    monkeypatch.setattr(parser, "_identify_main_tables", lambda _results, _pages: [None, None])
+
+    def fake_full_page_parse(
+        pdf_path,
+        page_images,
+        effective_dpi,
+        started_at,
+        timings,
+        *,
+        layout_attempted=False,
+    ):
+        calls.append((pdf_path, page_images, effective_dpi, started_at, timings, layout_attempted))
+        return expected
+
+    monkeypatch.setattr(parser, "_parse_pdf_without_layout", fake_full_page_parse)
+
+    result = parser.parse_pdf("statement.pdf")
+
+    assert result is expected
+    assert len(calls) == 1
+    assert calls[0][1] == pages
+    assert calls[0][2] == 200
+    assert "layout_detection" in calls[0][4]
+    assert calls[0][5] is True
+
+
 def test_finalize_extracted_tables_coalesces_schema_drift_before_classification():
     module = _load_eosin_pipeline_module()
     parser = module.BankStatementParser.__new__(module.BankStatementParser)

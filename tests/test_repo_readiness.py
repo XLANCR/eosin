@@ -108,6 +108,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_VLLM_ENABLE_PREFIX_CACHING=true" in env_example
     assert "BANK_PARSER_OCR_BACKEND_MODE=page_batch" in env_example
     assert "BANK_PARSER_LAYOUT_MODE=auto" in env_example
+    assert "BANK_PARSER_RECOVER_LAYOUT_MISSED_PAGES=true" in env_example
     assert "BANK_PARSER_ENABLE_PAGE_OCR_RETRY=false" in env_example
     assert "BANK_PARSER_PAGE_OCR_RETRY_ALL=false" in env_example
     assert "BANK_PARSER_PAGE_OCR_RETRY_DPI=300" in env_example

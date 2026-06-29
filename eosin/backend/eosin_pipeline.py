@@ -59,6 +59,9 @@ PDF_RENDER_DPI_MIN = 150
 PDF_RENDER_DPI_MAX = 300
 PARSE_TESTING = False
 PARSE_TESTING_TABLE_PAGES_PER_SIDE = 3
+RECOVER_LAYOUT_MISSED_PAGES = os.getenv(
+    "BANK_PARSER_RECOVER_LAYOUT_MISSED_PAGES", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 HEADER_MATCH_RGB_THRESHOLD = 0.94
 HEADER_MATCH_GRAY_THRESHOLD = 0.92
 HEADER_MATCH_EDGE_THRESHOLD = 0.90
@@ -1274,6 +1277,75 @@ class BankStatementParser:
 
         return page_evaluations
 
+    @staticmethod
+    def _has_transaction_row_shape(dataframe: pd.DataFrame) -> bool:
+        if dataframe.empty:
+            return False
+        amount_pattern = re.compile(
+            r"^(?:[₹$€£]\s*)?[+-]?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?"
+            r"(?:\s*(?:cr|dr))?$",
+            re.IGNORECASE,
+        )
+        for _, row in dataframe.fillna("").astype(str).iterrows():
+            values = [value.strip() for value in row.tolist() if value.strip()]
+            has_date = any(is_date_like(value) for value in values)
+            has_text = any(re.search(r"[A-Za-z]{3}", value) for value in values)
+            has_amount = any(
+                amount_pattern.fullmatch(value)
+                and (not value.isdigit() or len(value) <= 10)
+                for value in values
+            )
+            if has_date and has_text and has_amount:
+                return True
+        return False
+
+    def _recover_missing_layout_pages(
+        self,
+        *,
+        page_images: Sequence[Image.Image],
+        table_bboxes: Sequence[Optional[List[int]]],
+        page_evaluations: Sequence[Dict[str, object]],
+    ) -> Tuple[List[Dict[str, object]], Dict[str, float]]:
+        evaluated_pages = {int(item["page_index"]) for item in page_evaluations}
+        missing_pages = [
+            page_idx
+            for page_idx, bbox in enumerate(table_bboxes)
+            if bbox is None and page_idx not in evaluated_pages
+        ]
+        if not missing_pages:
+            return list(page_evaluations), self._empty_ocr_metrics()
+
+        expected_headers = next(
+            (
+                list(item["raw_headers"])
+                for item in page_evaluations
+                if item.get("raw_headers")
+            ),
+            None,
+        )
+        images = [
+            (page_idx, self._normalize_ocr_image(page_images[page_idx]))
+            for page_idx in missing_pages
+        ]
+        results, metrics = self._ocr_tables_parallel(images)
+        recovered: List[Dict[str, object]] = []
+        for page_idx, html_content in results:
+            evaluation = self._evaluate_page_ocr_result(
+                page_idx=page_idx,
+                html_content=html_content,
+                expected_headers=expected_headers,
+                pass_label="layout_miss_full_page",
+            )
+            dataframe = evaluation.get("dataframe")
+            if not isinstance(dataframe, pd.DataFrame) or not self._has_transaction_row_shape(dataframe):
+                evaluation["selected"] = False
+                evaluation["reasons"] = [
+                    *evaluation.get("reasons", []),
+                    "layout_miss_not_transaction_table",
+                ]
+            recovered.append(evaluation)
+        return sorted([*page_evaluations, *recovered], key=lambda item: int(item["page_index"])), metrics
+
     def _materialize_selected_tables(
         self,
         page_evaluations: Sequence[Dict[str, object]],
@@ -1804,8 +1876,11 @@ class BankStatementParser:
         effective_dpi: int,
         started_at: float,
         step_timings: Dict[str, float],
+        *,
+        layout_attempted: bool = False,
     ) -> pd.DataFrame:
-        print("  [2/4] Layout detection disabled; OCR-ing full pages...")
+        reason = "found no tables" if layout_attempted else "is disabled"
+        print(f"  [2/4] Layout detection {reason}; OCR-ing full pages...")
         step_started_at = time.time()
         ocr_images = [
             (page_idx, self._normalize_ocr_image(page_image))
@@ -1833,7 +1908,8 @@ class BankStatementParser:
                 "page_count": len(page_images),
                 "effective_dpi": effective_dpi,
                 "layout_mode": self.layout_mode,
-                "layout_enabled": False,
+                "layout_enabled": layout_attempted,
+                "layout_fallback_full_page": layout_attempted,
                 "ocr_images": len(ocr_images),
                 "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
                 "page_ocr": self._serialize_page_evaluations(page_evaluations),
@@ -1851,7 +1927,8 @@ class BankStatementParser:
             "page_count": len(page_images),
             "effective_dpi": effective_dpi,
             "layout_mode": self.layout_mode,
-            "layout_enabled": False,
+            "layout_enabled": layout_attempted,
+            "layout_fallback_full_page": layout_attempted,
             "ocr_images": len(ocr_images),
             "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
             "page_ocr": self._serialize_page_evaluations(page_evaluations),
@@ -1918,14 +1995,15 @@ class BankStatementParser:
         print(f"        → Tables on pages: {[p + 1 for p in pages_with_tables]}")
 
         if not pages_with_tables:
-            print("  ✗ No tables found in document")
-            self.last_run_stats = {
-                "timings": step_timings,
-                "pages_with_tables": [],
-                "page_count": len(page_images),
-                "effective_dpi": effective_dpi,
-            }
-            return pd.DataFrame()
+            print("        → No layout tables found; falling back to full-page OCR")
+            return self._parse_pdf_without_layout(
+                pdf_path,
+                page_images,
+                effective_dpi,
+                t0,
+                step_timings,
+                layout_attempted=True,
+            )
 
         if PARSE_TESTING:
             selected_pages = select_parse_testing_pages(
@@ -2010,6 +2088,18 @@ class BankStatementParser:
         print("  [8/8] Parsing HTML to DataFrames...")
         step_started_at = time.time()
         page_evaluations = self._extract_transaction_page_evaluations(all_ocr_results, pdf_path)
+        recovery_metrics = self._empty_ocr_metrics()
+        if RECOVER_LAYOUT_MISSED_PAGES and not PARSE_TESTING:
+            recovery_started_at = time.time()
+            page_evaluations, recovery_metrics = self._recover_missing_layout_pages(
+                page_images=page_images,
+                table_bboxes=table_bboxes,
+                page_evaluations=page_evaluations,
+            )
+            step_timings["ocr_layout_missed_pages"] = round(
+                time.time() - recovery_started_at,
+                3,
+            )
         retry_metrics = self._empty_ocr_metrics()
         if ENABLE_PAGE_OCR_RETRY:
             page_evaluations, retry_metrics = self._retry_suspicious_pages_with_layout(
@@ -2031,7 +2121,11 @@ class BankStatementParser:
                 "effective_dpi": effective_dpi,
                 "layout_mode": self.layout_mode,
                 "layout_enabled": True,
-                "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
+                "ocr_metrics": self._merge_ocr_metric_summaries(
+                    ocr_metrics,
+                    recovery_metrics,
+                    retry_metrics,
+                ),
                 "page_ocr": self._serialize_page_evaluations(page_evaluations),
             }
             return pd.DataFrame()
@@ -2049,10 +2143,14 @@ class BankStatementParser:
             "effective_dpi": effective_dpi,
             "layout_mode": self.layout_mode,
             "layout_enabled": True,
-            "ocr_images": len(ocr_images),
+            "ocr_images": len(ocr_images) + int(recovery_metrics.get("task_count", 0)),
             "header_source_page": first_page_idx + 1,
             "skip_header_stitching": skip_header_stitching,
-            "ocr_metrics": self._merge_ocr_metric_summaries(ocr_metrics, retry_metrics),
+            "ocr_metrics": self._merge_ocr_metric_summaries(
+                ocr_metrics,
+                recovery_metrics,
+                retry_metrics,
+            ),
             "page_ocr": self._serialize_page_evaluations(page_evaluations),
             "quality_summary": quality_summary,
             "transaction_reconstruction": dict(self._last_transaction_reconstruction),
