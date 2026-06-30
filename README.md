@@ -19,6 +19,15 @@ bounded container concurrency, parser-pool admission timeout, maximum container
 count, and function timeout. `/health` is liveness; `/ready` checks
 parser-service readiness and returns `503` when the service cannot accept work.
 
+### Modal runtime shape
+
+- A deployment is capped at one GPU container. That container accepts up to 35 queued inputs; it does not create one container per PDF.
+- Two parser instances bound CPU/layout work and feed up to 16 concurrent page OCR requests into vLLM continuous batching. The batch-drain window is 50 ms.
+- vLLM serves GLM-OCR on the L40S with MTP-3, `max_num_seqs=196`, prefix caching, async scheduling, and chunked prefill. MTP can be disabled through an empty `EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG` for isolated benchmarks.
+- Cold startup launches vLLM before parser imports so model startup and CPU preparation overlap. Cache volumes are committed only when explicitly seeding them; unchanged volumes are not committed on every production start.
+- GPU memory snapshots remain disabled because the previous vLLM/NCCL experiment was unstable. Production statement OCR and parser outputs are never persisted as caches.
+- Do not poll `/health` to keep a serverless container warm. Use direct parser traffic and push-based metrics; readiness checks are for deployment/load-balancer control only.
+
 ### What Makes Bank Statements So Hard to Parse?
 
 Bank statements are notorious for being a nightmare to automate due to:
@@ -45,13 +54,3 @@ To manage all these headaches, we made a few assumptions:
 - **Smart Date Parsing**: Eosin will try to pull together broken or spread-out dates and align them. If it still doesn’t make sense, we’ll ignore it and move on.
 - **Headers Don’t Overlap**: We assume headers don’t interfere with each other, making them useful to anchor the rest of the data.
 - **Spacing is Reasonably Consistent Across Pages**: While row and column spacing might be all over the place on one page, we assume it doesn’t change too wildly across the different pages.
-
-### Known Issues and TODOs
-
-- Last row of the table is clipped out intentionally currently for testing purposes.
-- The date parser library is quite slow and also accepts incorrect dates sometimes (for example '01/01/2024 d' is accepted as valid)
-- The parser currently does not differentiate between dates that are top aligned, center aligned, or bottom aligned.
-- Padding between the date header and adjacent headers isn't calculated correctly, currently we assume a fixed padding.
-- Whenever we need to search for a certain word/property within a word, we currently iterate over every word in the document. Should implement a hashmap type structure for this.
-- Only the first page of the document is parsed currently for testing purposes.
-- The parser currently does not differentiate between different types of transactions (credit, debit, etc.) within the text itself (for example '15CR' or '15DR')
