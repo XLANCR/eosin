@@ -64,7 +64,7 @@ VLLM_MAX_NUM_SEQS = os.getenv("EOSIN_MODAL_VLLM_MAX_NUM_SEQS", "196")
 VLLM_MAX_BATCHED_TOKENS = os.getenv("EOSIN_MODAL_VLLM_MAX_BATCHED_TOKENS", "24576")
 VLLM_SPECULATIVE_CONFIG = os.getenv(
     "EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG",
-    '{"method": "mtp", "num_speculative_tokens": 1}',
+    '{"method": "mtp", "num_speculative_tokens": 3}',
 )
 VLLM_ENABLE_PREFIX_CACHING = _env_bool("EOSIN_MODAL_VLLM_ENABLE_PREFIX_CACHING", True)
 VLLM_KV_CACHE_METRICS = _env_bool("EOSIN_MODAL_VLLM_KV_CACHE_METRICS", True)
@@ -379,8 +379,6 @@ class BankParserModalApp:
             "--dtype",
             "bfloat16",
             "--trust-remote-code",
-            "--speculative-config",
-            VLLM_SPECULATIVE_CONFIG,
             "--max-model-len",
             VLLM_MAX_MODEL_LEN,
             "--gpu-memory-utilization",
@@ -396,6 +394,8 @@ class BankParserModalApp:
         ]
         if VLLM_MODEL_REVISION:
             vllm_args.extend(["--revision", VLLM_MODEL_REVISION])
+        if VLLM_SPECULATIVE_CONFIG:
+            vllm_args.extend(["--speculative-config", VLLM_SPECULATIVE_CONFIG])
         if VLLM_FAST_BOOT:
             vllm_args.append("--enforce-eager")
         else:

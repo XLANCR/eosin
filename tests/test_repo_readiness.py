@@ -92,7 +92,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_MEMORY_MIB=32768" in env_example
     assert "EOSIN_MODAL_OCR_PIPELINE_WORKERS=16" in env_example
     assert "EOSIN_MODAL_VLLM_MAX_MODEL_LEN=12288" in env_example
-    assert 'EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG={"method": "mtp", "num_speculative_tokens": 1}' in env_example
+    assert 'EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG={"method": "mtp", "num_speculative_tokens": 3}' in env_example
     assert "EOSIN_MODAL_VLLM_MAX_NUM_SEQS=196" in env_example
     assert "EOSIN_MODAL_VLLM_MAX_BATCHED_TOKENS=24576" in env_example
     assert "EOSIN_MODAL_VLLM_ENABLE_GPU_SNAPSHOT=false" in env_example
@@ -417,6 +417,13 @@ def test_modal_starts_vllm_before_parser_imports_and_waits_afterward() -> None:
     await_index = enter_body.index("self._await_vllm_ready()")
 
     assert launch_index < prepare_index < await_index
+
+
+def test_modal_can_disable_speculative_decoding_for_benchmarks() -> None:
+    modal_app = Path("modal_app.py").read_text()
+
+    assert "if VLLM_SPECULATIVE_CONFIG:" in modal_app
+    assert 'vllm_args.extend(["--speculative-config", VLLM_SPECULATIVE_CONFIG])' in modal_app
 
 
 def test_debug_mode_saves_all_header_stitching_artifacts() -> None:
