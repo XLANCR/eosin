@@ -84,7 +84,7 @@ if VLLM_ENABLE_GPU_SNAPSHOT and not _env_bool("EOSIN_MODAL_ALLOW_GPU_SNAPSHOT", 
         "GPU snapshots were removed from this production Modal path after NCCL heartbeat log storms. "
         "Keep EOSIN_MODAL_VLLM_ENABLE_GPU_SNAPSHOT=false; test snapshots in a separate deployment."
     )
-VLLM_COMMIT_CACHE_AFTER_START = _env_bool("EOSIN_MODAL_VLLM_COMMIT_CACHE_AFTER_START", True)
+VLLM_COMMIT_CACHE_AFTER_START = _env_bool("EOSIN_MODAL_VLLM_COMMIT_CACHE_AFTER_START", False)
 HF_CACHE_PATH = "/root/.cache/huggingface"
 VLLM_CACHE_PATH = "/root/.cache/vllm"
 TRITON_CACHE_DIR = f"{VLLM_CACHE_PATH}/triton"
@@ -365,8 +365,8 @@ class BankParserModalApp:
         )
         self.web_app = create_app(service=self.service)
 
-    def _start_vllm(self) -> None:
-        started_at = time.monotonic()
+    def _launch_vllm(self) -> None:
+        self.vllm_started_at = time.monotonic()
         vllm_args = [
             "vllm",
             "serve",
@@ -417,13 +417,20 @@ class BankParserModalApp:
         if VLLM_ENABLE_LOG_REQUESTS:
             vllm_args.append("--enable-log-requests")
         self.vllm_process = subprocess.Popen(vllm_args, text=True)
-        print("Started vLLM subprocess; waiting for health", flush=True)
+        print("Started vLLM subprocess", flush=True)
+
+    def _await_vllm_ready(self) -> None:
+        print("Waiting for vLLM readiness", flush=True)
         _wait_for_http_health(
             VLLM_HEALTH_URL,
             timeout_seconds=STARTUP_TIMEOUT_SECONDS,
             process=self.vllm_process,
         )
-        print(f"vLLM startup phase completed in {time.monotonic() - started_at:.3f}s", flush=True)
+        print(
+            "vLLM startup phase completed in "
+            f"{time.monotonic() - self.vllm_started_at:.3f}s",
+            flush=True,
+        )
         if VLLM_COMMIT_CACHE_AFTER_START:
             cache_commit_started_at = time.monotonic()
             try:
@@ -447,17 +454,18 @@ class BankParserModalApp:
 
         self.config_path = Path(bank_parser_service_module.__file__).resolve().parent / "config.modal.yaml"
         os.environ["BANK_PARSER_CONFIG"] = str(self.config_path)
-        _prepare_cache_directories()
         print(f"Runtime preparation completed in {time.monotonic() - prepare_started_at:.3f}s", flush=True)
 
     @modal.enter(snap=False)
     def enter(self) -> None:
         enter_started_at = time.monotonic()
         print("Restore phase: entering live container", flush=True)
+        _prepare_cache_directories()
+        self._launch_vllm()
         self._prepare_runtime()
         if TAILSCALE_ENABLE:
             self.tailscale_process, _ = _start_tailscale()
-        self._start_vllm()
+        self._await_vllm_ready()
         parser_service_started_at = time.monotonic()
         self._build_parser_service()
         print(

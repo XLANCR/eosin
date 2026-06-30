@@ -99,7 +99,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_ALLOW_GPU_SNAPSHOT=false" in env_example
     assert "EOSIN_MODAL_VLLM_ENABLE_SLEEP_MODE=false" in env_example
     assert "EOSIN_MODAL_VLLM_SNAPSHOT_WARMUP_ENABLE=false" in env_example
-    assert "EOSIN_MODAL_VLLM_COMMIT_CACHE_AFTER_START=true" in env_example
+    assert "EOSIN_MODAL_VLLM_COMMIT_CACHE_AFTER_START=false" in env_example
     assert "EOSIN_MODAL_VLLM_SNAPSHOT_WARMUP_MODE=multimodal" in env_example
     assert "EOSIN_MODAL_HF_XET_HIGH_PERFORMANCE=1" in env_example
     assert "EOSIN_MODAL_TORCH_NCCL_ENABLE_MONITORING=0" in env_example
@@ -404,6 +404,19 @@ def test_modal_image_uses_page_http_default_and_metrics_auth_value() -> None:
     assert "hf_cache_volume.commit()" in modal_app
     assert "min_containers=MIN_CONTAINERS" in modal_app
     assert "EOSIN_MODAL_ALLOW_ALWAYS_ON" in modal_app
+
+
+def test_modal_starts_vllm_before_parser_imports_and_waits_afterward() -> None:
+    modal_app = Path("modal_app.py").read_text()
+    enter_body = modal_app.split("def enter(self) -> None:", maxsplit=1)[1].split(
+        "@modal.exit()", maxsplit=1
+    )[0]
+
+    launch_index = enter_body.index("self._launch_vllm()")
+    prepare_index = enter_body.index("self._prepare_runtime()")
+    await_index = enter_body.index("self._await_vllm_ready()")
+
+    assert launch_index < prepare_index < await_index
 
 
 def test_debug_mode_saves_all_header_stitching_artifacts() -> None:
