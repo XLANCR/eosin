@@ -268,6 +268,101 @@ def test_parse_html_table_tolerates_malformed_colspan_from_model_output():
     assert isinstance(dataframe, pd.DataFrame)
 
 
+def test_parse_html_table_expands_rowspan_transaction_fields():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead>
+            <tr><th>DATE</th><th>MODE</th><th>PARTICULARS</th><th>WITHDRAWALS</th><th>BALANCE</th></tr>
+          </thead>
+          <tbody>
+            <tr><td rowspan="3">21-03-2024</td><td rowspan="3">CMS TRANSACTION</td><td>FIRST</td><td>10.00</td><td>90.00</td></tr>
+            <tr><td>SECOND</td><td>20.00</td><td>70.00</td></tr>
+            <tr><td>THIRD</td><td>5.00</td><td>65.00</td></tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert list(dataframe["DATE"]) == ["21-03-2024"] * 3
+    assert list(dataframe["MODE"]) == ["CMS TRANSACTION"] * 3
+    assert list(dataframe["PARTICULARS"]) == ["FIRST", "SECOND", "THIRD"]
+    assert list(dataframe["BALANCE"]) == ["90.00", "70.00", "65.00"]
+
+
+def test_parse_html_table_restarts_malformed_rowspan_group_early():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead><tr><th>DATE</th><th>MODE</th><th>PARTICULARS</th><th>AMOUNT</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="4">21-03-2024</td><td rowspan="4">UPI</td><td>FIRST</td><td>10.00</td></tr>
+            <tr><td>SECOND</td><td>20.00</td></tr>
+            <tr><td rowspan="2">22-03-2024</td><td rowspan="2">CMS</td><td>THIRD</td><td>30.00</td></tr>
+            <tr><td>FOURTH</td><td>40.00</td></tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert list(dataframe["DATE"]) == [
+        "21-03-2024",
+        "21-03-2024",
+        "22-03-2024",
+        "22-03-2024",
+    ]
+    assert list(dataframe["PARTICULARS"]) == ["FIRST", "SECOND", "THIRD", "FOURTH"]
+
+
+def test_parse_html_table_does_not_reset_rowspans_for_date_inside_description():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead><tr><th>DATE</th><th>MODE</th><th>PARTICULARS</th><th>AMOUNT</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="3">21-03-2024</td><td rowspan="3">UPI</td><td>FIRST</td><td>10.00</td></tr>
+            <tr><td rowspan="2">EMI 22-03-2024</td><td>20.00</td></tr>
+            <tr><td>30.00</td></tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert list(dataframe["DATE"]) == ["21-03-2024"] * 3
+    assert list(dataframe["MODE"]) == ["UPI"] * 3
+    assert list(dataframe["PARTICULARS"]) == ["FIRST", "EMI 22-03-2024", "EMI 22-03-2024"]
+    assert list(dataframe["AMOUNT"]) == ["10.00", "20.00", "30.00"]
+
+
+def test_parse_html_table_splits_date_prefix_from_fused_mode_text():
+    module = _load_eosin_pipeline_module()
+
+    dataframe = module.parse_html_table(
+        """
+        <table>
+          <thead><tr><th>DATE</th><th>MODE</th><th>PARTICULARS</th><th>AMOUNT</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>22-03-2024 CMS TRANSACTION</td>
+              <td>WITHDRAWAL</td>
+              <td>UPI PAYMENT</td>
+              <td>30.00</td>
+            </tr>
+          </tbody>
+        </table>
+        """
+    )
+
+    assert dataframe.iloc[0]["DATE"] == "22-03-2024"
+    assert dataframe.iloc[0]["MODE"] == "CMS TRANSACTION WITHDRAWAL"
+
+
 def test_identify_main_tables_fallback_accepts_parallel_results_with_metrics(monkeypatch):
     module = _load_eosin_pipeline_module()
     parser = module.BankStatementParser.__new__(module.BankStatementParser)

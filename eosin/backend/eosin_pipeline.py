@@ -305,6 +305,10 @@ DATE_EMBEDDED_RE = re.compile(
     rf"\b{DATE_ATOM_RE}\b",
     re.IGNORECASE,
 )
+DATE_PREFIX_WITH_TEXT_RE = re.compile(
+    rf"^\s*({DATE_ATOM_RE})\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
 WHITESPACE_RE = re.compile(r"\s+")
 RUNAWAY_ZERO_RE = re.compile(r"0{12,}")
 RUNAWAY_DIGIT_RE = re.compile(r"\d{24,}")
@@ -569,6 +573,55 @@ def parse_span_attribute(value: object, default: int = 1, max_span: int = 50) ->
     return max(1, min(span, max_span))
 
 
+def _extract_rows_with_spans(row_elements: Sequence[object]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    active_spans: Dict[int, Tuple[str, int]] = {}
+
+    def consume_span(row: List[str], column: int) -> int:
+        text, remaining = active_spans[column]
+        row.append(text)
+        if remaining <= 1:
+            del active_spans[column]
+        else:
+            active_spans[column] = (text, remaining - 1)
+        return column + 1
+
+    for tr in row_elements:
+        row: List[str] = []
+        column = 0
+        cells = tr.find_all(["td", "th"], recursive=False)
+        if cells and active_spans:
+            first_text = cells[0].get_text(strip=True)
+            first_rowspan = parse_span_attribute(cells[0].get("rowspan"))
+            starts_new_date_group = bool(
+                DATE_VALUE_RE.fullmatch(first_text)
+                or DATE_PREFIX_WITH_TEXT_RE.fullmatch(first_text)
+            )
+            if first_rowspan > 1 and starts_new_date_group:
+                active_spans.clear()
+        for cell in cells:
+            while column in active_spans:
+                column = consume_span(row, column)
+            colspan = parse_span_attribute(cell.get("colspan"))
+            rowspan = parse_span_attribute(cell.get("rowspan"))
+            text = cell.get_text(strip=True)
+            for offset in range(colspan):
+                value = text if offset == 0 else ""
+                row.append(value)
+                if rowspan > 1:
+                    active_spans[column] = (value, rowspan - 1)
+                column += 1
+
+        while active_spans and column <= max(active_spans):
+            if column in active_spans:
+                column = consume_span(row, column)
+            else:
+                row.append("")
+                column += 1
+        rows.append(row)
+    return rows
+
+
 def extract_headers_from_html(html: str) -> List[str]:
     """Extract column headers from an HTML table."""
     soup = BeautifulSoup(html, "html.parser")
@@ -807,6 +860,41 @@ def make_columns_unique(columns: List[str]) -> List[str]:
     return unique_columns
 
 
+def _normalize_fused_date_mode_cells(dataframe: pd.DataFrame) -> pd.DataFrame:
+    normalized = dataframe.copy()
+    date_columns = [
+        column
+        for column in normalized.columns
+        if "date" in _normalize_identity_text(column)
+    ]
+    mode_column = next(
+        (
+            column
+            for column in normalized.columns
+            if _normalize_identity_text(column) in {"mode", "transactionmode", "transactiontype"}
+        ),
+        None,
+    )
+    if not date_columns or mode_column is None:
+        return normalized
+
+    for date_column in date_columns:
+        for row_index, value in normalized[date_column].items():
+            match = DATE_PREFIX_WITH_TEXT_RE.fullmatch(str(value or ""))
+            if not match:
+                continue
+            date_text, trailing_text = match.groups()
+            if not re.search(r"[A-Za-z]{3}", trailing_text):
+                continue
+            existing_mode = str(normalized.at[row_index, mode_column] or "").strip()
+            normalized.at[row_index, date_column] = date_text.strip()
+            if not existing_mode:
+                normalized.at[row_index, mode_column] = trailing_text.strip()
+            elif _normalize_identity_text(trailing_text) not in _normalize_identity_text(existing_mode):
+                normalized.at[row_index, mode_column] = f"{trailing_text.strip()} {existing_mode}"
+    return normalized
+
+
 def parse_html_table(
     html: str, expected_headers: Optional[List[str]] = None
 ) -> pd.DataFrame:
@@ -843,14 +931,7 @@ def parse_html_table(
                 thead_trs.add(id(tr))
         body_rows = [tr for tr in table.find_all("tr") if id(tr) not in thead_trs]
 
-    for tr in body_rows:
-        cells = tr.find_all(["td", "th"])
-        row_data: List[str] = []
-        for cell in cells:
-            colspan = parse_span_attribute(cell.get("colspan"))
-            text = cell.get_text(strip=True)
-            row_data.extend([text] + [""] * (colspan - 1))
-        rows.append(row_data)
+    rows.extend(_extract_rows_with_spans(body_rows))
 
     if header_row and not headers_are_valid(header_row):
         rows.insert(0, header_row)
@@ -930,7 +1011,8 @@ def parse_html_table(
     else:
         cols = [f"col_{i}" for i in range(ncols)]
 
-    return pd.DataFrame(normalized_rows, columns=make_columns_unique(cols))
+    dataframe = pd.DataFrame(normalized_rows, columns=make_columns_unique(cols))
+    return _normalize_fused_date_mode_cells(dataframe)
 
 
 def _score_table_candidate(

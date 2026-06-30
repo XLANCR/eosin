@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from itertools import groupby
 from math import ceil
 from typing import Any, Sequence
 
@@ -214,6 +215,74 @@ def _infer_generic_schemas(frames: Sequence[pd.DataFrame]) -> tuple[list[pd.Data
     return inferred, count
 
 
+def _shifted_financial_mapping(
+    frame: pd.DataFrame,
+) -> tuple[object, object, object] | None:
+    public_columns = [column for column in frame.columns if column not in SOURCE_COLUMNS]
+    balance_columns = [column for column in public_columns if _header_role(column) == "balance"]
+    financial_columns = [
+        column
+        for column in public_columns
+        if _header_role(column) in {"debit", "credit", "amount"}
+    ]
+    if len(balance_columns) != 1 or len(financial_columns) < 2:
+        return None
+
+    balance_column = balance_columns[0]
+    if any(_money_decimal(value) is not None for value in frame[balance_column]):
+        return None
+
+    best_mapping: tuple[object, object, object] | None = None
+    best_support = 0
+    best_mapping_count = 0
+    for amount_column in financial_columns:
+        for shifted_balance_column in financial_columns:
+            if amount_column == shifted_balance_column:
+                continue
+            support = 0
+            previous_balance: Decimal | None = None
+            for _, row in frame.iterrows():
+                amount = _money_decimal(row.get(amount_column, ""))
+                current_balance = _money_decimal(row.get(shifted_balance_column, ""))
+                if amount is not None and current_balance is not None and previous_balance is not None:
+                    support += int(abs(current_balance - previous_balance) == abs(amount))
+                if current_balance is not None:
+                    previous_balance = current_balance
+            if support > best_support:
+                best_mapping = (amount_column, shifted_balance_column, balance_column)
+                best_support = support
+                best_mapping_count = 1
+            elif support == best_support and support > 0:
+                best_mapping_count += 1
+    return best_mapping if best_support >= 2 and best_mapping_count == 1 else None
+
+
+def _repair_shifted_financial_frames(
+    frames: Sequence[pd.DataFrame],
+) -> tuple[list[pd.DataFrame], int, int]:
+    repaired_frames: list[pd.DataFrame] = []
+    repaired_frame_count = 0
+    repaired_row_count = 0
+    for frame in frames:
+        mapping = _shifted_financial_mapping(frame)
+        if mapping is None:
+            repaired_frames.append(frame.copy())
+            continue
+        amount_column, shifted_balance_column, balance_column = mapping
+        repaired = frame.copy()
+        for row_index, row in repaired.iterrows():
+            amount = _money_decimal(row.get(amount_column, ""))
+            shifted_balance = _money_decimal(row.get(shifted_balance_column, ""))
+            if amount is None or shifted_balance is None or _money_decimal(row.get(balance_column, "")) is not None:
+                continue
+            repaired.at[row_index, balance_column] = _clean_value(row.get(shifted_balance_column, ""))
+            repaired.at[row_index, shifted_balance_column] = ""
+            repaired_row_count += 1
+        repaired_frames.append(repaired)
+        repaired_frame_count += 1
+    return repaired_frames, repaired_frame_count, repaired_row_count
+
+
 def _row_values(row: pd.Series, public_columns: Sequence[object]) -> dict[object, str]:
     return {column: _clean_value(row.get(column, "")) for column in public_columns}
 
@@ -350,6 +419,38 @@ def _resolve_single_amount_direction(
     return resolved, True
 
 
+def _correct_explicit_amount_direction(
+    values: dict[object, str],
+    previous_balance: Decimal | None,
+) -> tuple[dict[object, str], bool]:
+    if previous_balance is None:
+        return values, False
+    current_balance = _first_role_decimal(values, "balance")
+    money_cells = [
+        (column, role, text, _money_decimal(text))
+        for role in ("debit", "credit")
+        for column, text in _role_values(values, role)
+    ]
+    money_cells = [cell for cell in money_cells if cell[3] not in {None, Decimal("0")}]
+    if current_balance is None or len(money_cells) != 1:
+        return values, False
+
+    source_column, source_role, amount_text, amount = money_cells[0]
+    if amount is None:
+        return values, False
+    delta = current_balance - previous_balance
+    target_role = "credit" if delta == abs(amount) else "debit" if delta == -abs(amount) else None
+    if target_role is None or target_role == source_role:
+        return values, False
+    target_columns = [column for column in values if _header_role(column) == target_role]
+    if not target_columns:
+        return values, False
+    resolved = dict(values)
+    resolved[source_column] = ""
+    resolved[target_columns[0]] = amount_text
+    return resolved, True
+
+
 def _derive_missing_balance(
     values: dict[object, str],
     previous_balance: Decimal | None,
@@ -375,6 +476,45 @@ def _derive_missing_balance(
     resolved = dict(values)
     resolved[balance_columns[0]] = f"{current_balance:.2f}"
     return resolved, True
+
+
+def _repair_shifted_amount_balance(
+    values: dict[object, str],
+    previous_balance: Decimal | None,
+) -> tuple[dict[object, str], bool]:
+    if previous_balance is None or _role_values(values, "balance"):
+        return values, False
+    balance_columns = [column for column in values if _header_role(column) == "balance"]
+    money_cells = [
+        (column, role, text, _money_decimal(text))
+        for role in ("debit", "credit")
+        for column, text in _role_values(values, role)
+    ]
+    money_cells = [cell for cell in money_cells if cell[3] is not None]
+    if not balance_columns or len(money_cells) != 2:
+        return values, False
+
+    candidate_repair: dict[object, str] | None = None
+    for balance_index, balance_cell in enumerate(money_cells):
+        amount_cell = money_cells[1 - balance_index]
+        candidate_balance = balance_cell[3]
+        amount = amount_cell[3]
+        if candidate_balance is None or amount is None or amount < 0:
+            continue
+        delta = candidate_balance - previous_balance
+        target_role = "credit" if delta == amount else "debit" if delta == -amount else None
+        target_columns = [column for column in values if _header_role(column) == target_role]
+        if not target_columns:
+            continue
+        resolved = dict(values)
+        resolved[money_cells[0][0]] = ""
+        resolved[money_cells[1][0]] = ""
+        resolved[target_columns[0]] = amount_cell[2]
+        resolved[balance_columns[0]] = balance_cell[2]
+        if candidate_repair is not None and candidate_repair != resolved:
+            return values, False
+        candidate_repair = resolved
+    return (candidate_repair, True) if candidate_repair is not None else (values, False)
 
 
 def _merge_continuation(target: dict[object, str], fragment: dict[object, str]) -> bool:
@@ -532,6 +672,66 @@ def _replayed_source_rows(
     return replayed
 
 
+def _runaway_repeated_source_rows(
+    frame: pd.DataFrame,
+    public_columns: Sequence[object],
+) -> set[tuple[int, int, int]]:
+    repeated: set[tuple[int, int, int]] = set()
+
+    def signature(item: tuple[object, pd.Series]) -> tuple[object, ...]:
+        _, row = item
+        values = _row_values(row, public_columns)
+        return (
+            int(row.get(SOURCE_PAGE_COLUMN, -1)),
+            int(row.get(SOURCE_TABLE_COLUMN, 0)),
+            *(" ".join(values[column].casefold().split()) for column in public_columns),
+        )
+
+    ordered_items = list(frame.iterrows())
+    indexed_items = list(enumerate(ordered_items))
+    for _, grouped_items in groupby(indexed_items, key=lambda item: signature(item[1])):
+        positioned_items = list(grouped_items)
+        items = [item for _, item in positioned_items]
+        if len(items) < 3:
+            continue
+        first_row = items[0][1]
+        values = _row_values(first_row, public_columns)
+        resolved_date, _ = _resolve_date(first_row, public_columns)
+        amount_values = [
+            _money_decimal(value)
+            for role in ("debit", "credit", "amount")
+            for _, value in _role_values(values, role)
+        ]
+        amount_values = [amount for amount in amount_values if amount not in {None, Decimal("0")}]
+        if not resolved_date or len(amount_values) != 1 or _first_role_decimal(values, "balance") is None:
+            continue
+        first_position = positioned_items[0][0]
+        exclude_first = False
+        if first_position > 0:
+            previous_row = ordered_items[first_position - 1][1]
+            same_source_table = (
+                int(previous_row.get(SOURCE_PAGE_COLUMN, -1))
+                == int(first_row.get(SOURCE_PAGE_COLUMN, -1))
+                and int(previous_row.get(SOURCE_TABLE_COLUMN, 0))
+                == int(first_row.get(SOURCE_TABLE_COLUMN, 0))
+            )
+            previous_balance = _first_role_decimal(
+                _row_values(previous_row, public_columns),
+                "balance",
+            )
+            current_balance = _first_role_decimal(values, "balance")
+            exclude_first = same_source_table and previous_balance == current_balance
+        repeated.update(
+            (
+                int(row.get(SOURCE_PAGE_COLUMN, -1)),
+                int(row.get(SOURCE_TABLE_COLUMN, 0)),
+                int(row.get(SOURCE_ROW_COLUMN, 0)),
+            )
+            for _, row in items[0 if exclude_first else 1 :]
+        )
+    return repeated
+
+
 def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionResult:
     non_empty_frames = [frame.copy() for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
     if not non_empty_frames:
@@ -544,14 +744,20 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             "generic_schema_frames_inferred": 0,
             "balance_resolved_amount_sources": 0,
             "derived_balance_sources": 0,
+            "shifted_schema_frames_repaired": 0,
+            "shifted_amount_balance_repairs": 0,
             "replayed_source_pages": [],
             "replayed_source_rows": [],
+            "runaway_repeated_source_rows": [],
             "conservation_ok": True,
         }
         return ReconstructionResult(dataframe=pd.DataFrame(), diagnostics=diagnostics)
 
     inferred_frames, inferred_schema_count = _infer_generic_schemas(non_empty_frames)
-    combined = _coalesce_semantic_columns(_ordered_combined_frame(inferred_frames))
+    repaired_frames, shifted_schema_frame_count, shifted_schema_row_count = (
+        _repair_shifted_financial_frames(inferred_frames)
+    )
+    combined = _coalesce_semantic_columns(_ordered_combined_frame(repaired_frames))
     public_columns = [column for column in combined.columns if column not in SOURCE_COLUMNS]
     canonical_date_column = _canonical_date_column([combined])
     if canonical_date_column not in combined.columns:
@@ -559,6 +765,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         public_columns.append(canonical_date_column)
     replayed_pages = _replayed_source_pages(combined, public_columns)
     replayed_rows = _replayed_source_rows(combined, public_columns, replayed_pages)
+    runaway_repeated_rows = _runaway_repeated_source_rows(combined, public_columns)
 
     emitted_rows: list[dict[object, str]] = []
     emitted_source_count = 0
@@ -571,6 +778,7 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
     previous_balance: Decimal | None = None
     balance_resolved_amounts = 0
     derived_balances = 0
+    shifted_amount_balance_repairs = shifted_schema_row_count
 
     ordered_rows = list(combined.iterrows())
     for position, (_, row) in enumerate(ordered_rows):
@@ -589,6 +797,10 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
             exclusions["replayed_source_row"] += 1
             last_row_was_attachable = False
             continue
+        if source_id in runaway_repeated_rows:
+            exclusions["runaway_repeated_row"] += 1
+            last_row_was_attachable = False
+            continue
         reason = _non_transaction_reason(values)
         if reason:
             exclusions[reason] += 1
@@ -597,6 +809,16 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
 
         values, amount_was_resolved = _resolve_single_amount_direction(values, previous_balance)
         balance_resolved_amounts += int(amount_was_resolved)
+        values, explicit_direction_was_resolved = _correct_explicit_amount_direction(
+            values,
+            previous_balance,
+        )
+        balance_resolved_amounts += int(explicit_direction_was_resolved)
+        values, shifted_values_were_repaired = _repair_shifted_amount_balance(
+            values,
+            previous_balance,
+        )
+        shifted_amount_balance_repairs += int(shifted_values_were_repaired)
         values, balance_was_derived = _derive_missing_balance(values, previous_balance)
         derived_balances += int(balance_was_derived)
 
@@ -682,10 +904,16 @@ def reconstruct_transactions(frames: Sequence[pd.DataFrame]) -> ReconstructionRe
         "generic_schema_frames_inferred": inferred_schema_count,
         "balance_resolved_amount_sources": balance_resolved_amounts,
         "derived_balance_sources": derived_balances,
+        "shifted_schema_frames_repaired": shifted_schema_frame_count,
+        "shifted_amount_balance_repairs": shifted_amount_balance_repairs,
         "replayed_source_pages": sorted(replayed_pages),
         "replayed_source_rows": [
             {"page": page, "row": row, "table": table}
             for page, table, row in sorted(replayed_rows)
+        ],
+        "runaway_repeated_source_rows": [
+            {"page": page, "row": row, "table": table}
+            for page, table, row in sorted(runaway_repeated_rows)
         ],
         "exclusion_reasons": dict(sorted(exclusions.items())),
         "rejection_reasons": dict(sorted(rejections.items())),

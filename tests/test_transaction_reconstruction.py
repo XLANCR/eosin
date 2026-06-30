@@ -158,6 +158,119 @@ def test_derives_missing_balance_from_explicit_ledger_values() -> None:
     assert result.diagnostics["derived_balance_sources"] == 2
 
 
+def test_repairs_amount_and_balance_shift_using_ledger_delta() -> None:
+    frame = source_frame(
+        0,
+        [
+            {
+                "Date": "01/01/2024",
+                "Description": "START",
+                "Deposits": "100.00",
+                "Withdrawals": "",
+                "Balance": "100.00",
+            },
+            {
+                "Date": "02/01/2024",
+                "Description": "REFUND",
+                "Deposits": "10.00",
+                "Withdrawals": "110.00",
+                "Balance": "",
+            },
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert result.dataframe.iloc[1]["Deposits"] == "10.00"
+    assert "Withdrawals" not in result.dataframe.columns
+    assert result.dataframe.iloc[1]["Balance"] == "110.00"
+    assert result.diagnostics["shifted_amount_balance_repairs"] == 1
+
+
+def test_does_not_repair_ambiguous_row_local_amount_balance_shift() -> None:
+    frame = source_frame(
+        0,
+        [
+            {
+                "Date": "01/01/2024",
+                "Description": "START",
+                "Debit": "",
+                "Credit": "100.00",
+                "Balance": "100.00",
+            },
+            {
+                "Date": "02/01/2024",
+                "Description": "AMBIGUOUS",
+                "Debit": "90.00",
+                "Credit": "10.00",
+                "Balance": "",
+            },
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert result.dataframe.iloc[1]["Debit"] == "90.00"
+    assert result.dataframe.iloc[1]["Credit"] == "10.00"
+    assert "Balance" in result.dataframe.columns
+    assert result.dataframe.iloc[1]["Balance"] == ""
+    assert result.diagnostics["shifted_amount_balance_repairs"] == 0
+
+
+def test_repairs_frame_wide_amount_balance_shift_from_balance_chain() -> None:
+    frame = source_frame(
+        0,
+        [
+            {
+                "Date": "21/03/2024",
+                "Description": "FIRST",
+                "Deposits": "88.00",
+                "Withdrawals": "15,778.29",
+                "Balance": "",
+            },
+            {
+                "Date": "21/03/2024",
+                "Description": "SECOND",
+                "Deposits": "50.00",
+                "Withdrawals": "15,728.29",
+                "Balance": "",
+            },
+            {
+                "Date": "21/03/2024",
+                "Description": "THIRD",
+                "Deposits": "18.00",
+                "Withdrawals": "15,710.29",
+                "Balance": "",
+            },
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert list(result.dataframe["Balance"]) == ["15,778.29", "15,728.29", "15,710.29"]
+    assert list(result.dataframe["Deposits"]) == ["88.00", "", ""]
+    assert list(result.dataframe["Withdrawals"]) == ["", "50.00", "18.00"]
+    assert result.diagnostics["shifted_schema_frames_repaired"] == 1
+    assert result.diagnostics["shifted_amount_balance_repairs"] == 3
+
+
+def test_does_not_repair_ambiguous_shifted_financial_mapping() -> None:
+    frame = source_frame(
+        0,
+        [
+            {"Date": "01/01/2024", "Description": "FIRST", "Deposits": "10.00", "Withdrawals": "30.00", "Balance": ""},
+            {"Date": "02/01/2024", "Description": "SECOND", "Deposits": "20.00", "Withdrawals": "10.00", "Balance": ""},
+            {"Date": "03/01/2024", "Description": "THIRD", "Deposits": "5.00", "Withdrawals": "15.00", "Balance": ""},
+        ],
+    )
+
+    result = reconstruct_transactions([frame])
+
+    assert "Balance" not in result.dataframe.columns
+    assert result.diagnostics["shifted_schema_frames_repaired"] == 0
+    assert result.diagnostics["shifted_amount_balance_repairs"] == 0
+
+
 def test_merges_undated_fragment_forward_into_next_dated_row() -> None:
     frames = [
         source_frame(
@@ -468,6 +581,44 @@ def test_preserves_identical_legitimate_transactions() -> None:
 
     assert len(result.dataframe) == 2
     assert result.diagnostics["emitted_transaction_sources"] == 2
+
+
+def test_repeat_detection_preserves_financial_punctuation_differences() -> None:
+    rows = [
+        {"Date": "04/01/2024", "Description": "PAYMENT", "Debit": "50.00", "Balance": "500.00"},
+        {"Date": "04/01/2024", "Description": "PAYMENT", "Debit": "5,000", "Balance": "50,000"},
+        {"Date": "04/01/2024", "Description": "PAYMENT", "Debit": "50.00", "Balance": "500.00"},
+    ]
+
+    result = reconstruct_transactions([source_frame(0, rows)])
+
+    assert len(result.dataframe) == 3
+    assert result.diagnostics["runaway_repeated_source_rows"] == []
+
+
+def test_excludes_runaway_consecutive_financial_repetition() -> None:
+    preceding = {
+        "Date": "04/01/2024",
+        "Description": "PRECEDING PAYMENT",
+        "Debit": "25.00",
+        "Balance": "500.00",
+    }
+    row = {
+        "Date": "04/01/2024",
+        "Description": "GLM REPEATED PAYMENT",
+        "Debit": "50.00",
+        "Balance": "500.00",
+    }
+    frame = source_frame(0, [preceding, *[row.copy() for _ in range(5)]])
+
+    result = reconstruct_transactions([frame])
+
+    assert list(result.dataframe["Description"]) == ["PRECEDING PAYMENT"]
+    assert result.diagnostics["exclusion_reasons"]["runaway_repeated_row"] == 5
+    assert result.diagnostics["runaway_repeated_source_rows"] == [
+        {"page": 0, "row": row_index, "table": 0}
+        for row_index in range(1, 6)
+    ]
 
 
 def test_excludes_short_replayed_source_page_after_date_regression() -> None:
