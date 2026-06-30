@@ -83,7 +83,7 @@ def test_env_example_has_modal_defaults() -> None:
     assert "EOSIN_MODAL_CPU=8.0" in env_example
     assert "EOSIN_MODAL_MIN_CONTAINERS=0" in env_example
     assert "EOSIN_MODAL_ALLOW_ALWAYS_ON=false" in env_example
-    assert "EOSIN_MODAL_MAX_CONTAINERS=3" in env_example
+    assert "EOSIN_MODAL_MAX_CONTAINERS=1" in env_example
     assert "EOSIN_MODAL_REQUIRES_PROXY_AUTH=true" in env_example
     assert "EOSIN_MODAL_MAX_INPUTS=35" in env_example
     assert "EOSIN_MODAL_TARGET_INPUTS=35" in env_example
