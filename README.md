@@ -28,6 +28,21 @@ parser-service readiness and returns `503` when the service cannot accept work.
 - GPU memory snapshots remain disabled because the previous vLLM/NCCL experiment was unstable. Production statement OCR and parser outputs are never persisted as caches.
 - Do not poll `/health` to keep a serverless container warm. Use direct parser traffic and push-based metrics; readiness checks are for deployment/load-balancer control only.
 
+### Direct Modal benchmark
+
+Use `scripts/benchmark_modal_parser.py` for bounded cold-start and warmed-throughput checks. It invokes the Modal class directly, caps concurrency at 35, cancels calls that exceed the request timeout, and writes local OCR artifacts that `scripts/replay_cached_ocr_quality.py` can evaluate. It never polls a public health endpoint.
+
+```bash
+python scripts/benchmark_modal_parser.py \
+  --app-name eosin-glm-ocr \
+  --class-name BankParserModalApp \
+  --corpus-root "bank statements" \
+  --pdf "bank statements/UCO Bank/782482386-Bank-Statement.pdf" \
+  --concurrency 1 \
+  --request-timeout-seconds 600 \
+  --output-json /tmp/eosin-modal-benchmark.json
+```
+
 ### What Makes Bank Statements So Hard to Parse?
 
 Bank statements are notorious for being a nightmare to automate due to:
