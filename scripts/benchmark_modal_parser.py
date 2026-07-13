@@ -31,6 +31,8 @@ class RequestRecord:
     retry_count: int
     quality_artifact: str | None
     error: str | None
+    service_timings: Mapping[str, object] | None = None
+    ocr_metrics: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,20 @@ def aggregate_records(
     total_pages = sum(record.page_count for record in records)
     successful = sum(record.success for record in records)
     artifacts = [record.quality_artifact for record in records if record.quality_artifact]
+    request_records = [
+        {
+            "pdf_path": record.pdf_path,
+            "page_count": record.page_count,
+            "latency_seconds": record.latency_seconds,
+            "success": record.success,
+            "retry_count": record.retry_count,
+            "quality_artifact": record.quality_artifact,
+            "error": record.error,
+            "service_timings": dict(record.service_timings or {}),
+            "ocr_metrics": dict(record.ocr_metrics or {}),
+        }
+        for record in records
+    ]
     return {
         "request_count": len(records),
         "successful_requests": successful,
@@ -102,6 +118,7 @@ def aggregate_records(
         "gpu_utilization_percent": _distribution(utilization),
         "peak_gpu_memory_bytes": max(memory) if memory else None,
         "quality_artifact_references": artifacts,
+        "request_records": request_records,
         "errors": [record.error for record in records if record.error],
     }
 
@@ -189,15 +206,19 @@ def invoke_request(
     artifact_dir: Path,
     *,
     request_timeout_seconds: float = 600.0,
+    document_type: str | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> RequestRecord:
     started_at = clock()
     function_call = None
     try:
-        function_call = instance.extract_glm_page_html.spawn(
-            item.pdf_path.name,
-            item.pdf_path.read_bytes(),
-        )
+        arguments = (item.pdf_path.name, item.pdf_path.read_bytes())
+        if document_type:
+            function_call = instance.extract_document_evidence.spawn(
+                *arguments, document_type
+            )
+        else:
+            function_call = instance.extract_glm_page_html.spawn(*arguments)
         response = function_call.get(timeout=request_timeout_seconds)
         if not isinstance(response, Mapping):
             raise TypeError("extract_glm_page_html must return a mapping")
@@ -214,6 +235,8 @@ def invoke_request(
             _retry_count(response),
             str(artifact),
             None,
+            response.get("timings") if isinstance(response.get("timings"), Mapping) else None,
+            response.get("ocr_metrics") if isinstance(response.get("ocr_metrics"), Mapping) else None,
         )
     except TimeoutError as error:
         if function_call is not None:
@@ -271,6 +294,7 @@ def run_benchmark(
     artifact_dir: Path,
     request_timeout_seconds: float = 600.0,
     metrics_method_name: str | None = None,
+    document_type: str | None = None,
     invoke: Callable[..., RequestRecord] = invoke_request,
     clock: Callable[[], float] = time.monotonic,
     executor_factory: Callable[..., object] = ThreadPoolExecutor,
@@ -279,12 +303,10 @@ def run_benchmark(
     if not fixed_plan:
         raise ValueError("benchmark plan must contain at least one PDF")
     cold_started_at = clock()
-    cold_record = invoke(
-        instance,
-        fixed_plan[0],
-        artifact_dir / "cold",
-        request_timeout_seconds=request_timeout_seconds,
-    )
+    cold_kwargs = {"request_timeout_seconds": request_timeout_seconds}
+    if document_type:
+        cold_kwargs["document_type"] = document_type
+    cold_record = invoke(instance, fixed_plan[0], artifact_dir / "cold", **cold_kwargs)
     cold_seconds = clock() - cold_started_at
     bounded_concurrency = clamp_concurrency(concurrency)
     if not cold_record.success:
@@ -299,6 +321,9 @@ def run_benchmark(
             "warmed_elapsed_seconds": 0.0,
             "cold_request_success": False,
             "cold_quality_artifact_reference": None,
+            "cold_request_record": aggregate_records(
+                (cold_record,), elapsed_seconds=cold_seconds, cold_request_seconds=cold_seconds
+            )["request_records"][0],
         }
     reset_gpu_metrics(instance, metrics_method_name)
     warmed_started_at = clock()
@@ -306,12 +331,7 @@ def run_benchmark(
     try:
         warmed_records = tuple(
             executor.map(
-                lambda item: invoke(
-                    instance,
-                    item,
-                    artifact_dir,
-                    request_timeout_seconds=request_timeout_seconds,
-                ),
+                lambda item: invoke(instance, item, artifact_dir, **cold_kwargs),
                 fixed_plan,
             )
         )
@@ -330,6 +350,9 @@ def run_benchmark(
         "warmed_elapsed_seconds": _rounded(warmed_seconds),
         "cold_request_success": cold_record.success,
         "cold_quality_artifact_reference": cold_record.quality_artifact,
+        "cold_request_record": aggregate_records(
+            (cold_record,), elapsed_seconds=cold_seconds, cold_request_seconds=cold_seconds
+        )["request_records"][0],
     }
 
 
@@ -358,7 +381,7 @@ def build_request_plan(
             for path in corpus_root.rglob("*")
             if path.is_file() and path.suffix.lower() == ".pdf"
         )
-        artifact_paths = [str(path.relative_to(corpus_root)) for path in paths]
+        artifact_paths = [path.relative_to(corpus_root).as_posix() for path in paths]
     else:
         paths = []
         artifact_paths = []
@@ -401,6 +424,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=600.0,
     )
     parser.add_argument("--metrics-method")
+    parser.add_argument(
+        "--document-type",
+        choices=("bank_statement", "invoice", "receipt"),
+        help="Use the typed document-evidence RPC with the selected OCR task.",
+    )
     args = parser.parse_args(argv)
     if args.pdf_paths and args.corpus_root is None:
         parser.error("--pdf requires --corpus-root")
@@ -425,12 +453,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         artifact_dir=artifact_dir,
         request_timeout_seconds=args.request_timeout_seconds,
         metrics_method_name=args.metrics_method,
+        document_type=args.document_type,
     )
     output = {
         **summary,
         "app_name": args.app_name,
         "class_name": args.class_name,
         "repetitions": args.repetitions,
+        "document_type": args.document_type or "bank_statement",
         "request_plan": [item.artifact_pdf_path for item in plan],
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)

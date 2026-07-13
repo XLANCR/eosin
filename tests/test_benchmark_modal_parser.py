@@ -151,6 +151,51 @@ def test_direct_modal_rpc_writes_replay_compatible_quality_artifact(
         item.repetition = 2
 
 
+def test_typed_document_rpc_and_request_telemetry_are_persisted(tmp_path: Path) -> None:
+    benchmark = _load_module()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeFunctionCall:
+        def get(self, timeout: float):
+            calls.append(("get", timeout))
+            return {
+                "page_count": 1,
+                "pages": [{"page_number": 1, "raw_html": "invoice"}],
+                "timings": {"service_total": 1.25},
+                "ocr_metrics": {"request_mean": 1.0},
+            }
+
+    class FakeRemoteMethod:
+        def spawn(self, *args):
+            calls.append(("spawn", *args))
+            return FakeFunctionCall()
+
+    pdf_path = tmp_path / "invoice.pdf"
+    pdf_path.write_bytes(b"%PDF-invoice")
+    item = benchmark.PlannedRequest(1, 1, pdf_path, "invoice.pdf")
+    record = benchmark.invoke_request(
+        SimpleNamespace(extract_document_evidence=FakeRemoteMethod()),
+        item,
+        tmp_path / "responses",
+        document_type="invoice",
+        clock=iter((3.0, 4.5)).__next__,
+    )
+    summary = benchmark.aggregate_records(
+        (record,), elapsed_seconds=1.5, cold_request_seconds=0.0
+    )
+
+    assert calls == [
+        ("spawn", "invoice.pdf", b"%PDF-invoice", "invoice"),
+        ("get", 600.0),
+    ]
+    assert summary["request_records"][0]["service_timings"] == {
+        "service_total": 1.25
+    }
+    assert summary["request_records"][0]["ocr_metrics"] == {
+        "request_mean": 1.0
+    }
+
+
 def test_direct_modal_timeout_cancels_without_terminating_container(
     tmp_path: Path,
 ) -> None:
