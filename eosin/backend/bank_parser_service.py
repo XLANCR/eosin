@@ -17,6 +17,12 @@ import fitz
 import eosin.backend.eosin_pipeline as impl
 
 
+CRITICAL_EVIDENCE_RETRY_REASONS = {
+    "money_in_non_amount_columns",
+    "runaway_tokens",
+}
+
+
 @dataclass(frozen=True)
 class BankParserResult:
     source_pdf: str
@@ -298,22 +304,29 @@ class BankParserService:
                 ocr_results, ocr_metrics = parser._ocr_tables_parallel(
                     ocr_images, task_type=task_type
                 )
-                ocr_seconds = time.time() - ocr_started_at
 
                 # Quality evaluation per page (lightweight: no DataFrame assembly)
-                page_quality = {}
+                page_evaluations = []
                 for page_idx, html in ocr_results:
                     if not html:
-                        page_quality[page_idx] = {"quality_score": 0, "suspicious": True, "reasons": ["empty_ocr_output"]}
+                        page_evaluations.append({
+                            "page_index": page_idx,
+                            "raw_html": "",
+                            "quality_score": 0,
+                            "suspicious": True,
+                            "reasons": ["empty_ocr_output"],
+                        })
                         continue
                     if task_type == "text":
                         usable_text = str(html).strip()
                         suspicious = len(usable_text) < 20
-                        page_quality[page_idx] = {
+                        page_evaluations.append({
+                            "page_index": page_idx,
+                            "raw_html": html,
                             "quality_score": 25 if suspicious else 100,
                             "suspicious": suspicious,
                             "reasons": ["short_text_output"] if suspicious else [],
-                        }
+                        })
                         continue
                     try:
                         evaluation = parser._evaluate_page_ocr_result(
@@ -322,16 +335,58 @@ class BankParserService:
                             expected_headers=None,
                             pass_label="evidence",
                         )
-                        page_quality[page_idx] = {
-                            "quality_score": int(evaluation.get("quality_score", 50)),
-                            "suspicious": bool(evaluation.get("suspicious", False)),
-                            "reasons": [str(r) for r in evaluation.get("reasons", [])],
-                        }
+                        page_evaluations.append({
+                            **evaluation,
+                            "page_index": page_idx,
+                            "raw_html": html,
+                        })
                     except Exception:
-                        page_quality[page_idx] = {
+                        page_evaluations.append({
+                            "page_index": page_idx,
+                            "raw_html": html,
                             "quality_score": 50, "suspicious": True,
                             "reasons": ["quality_evaluation_failed"],
+                        })
+
+                if task_type == "table":
+                    retry_candidates = [
+                        evaluation
+                        for evaluation in page_evaluations
+                        if CRITICAL_EVIDENCE_RETRY_REASONS.intersection(
+                            str(reason) for reason in evaluation.get("reasons", [])
+                        )
+                    ]
+                    if retry_candidates:
+                        retried, retry_metrics = parser._retry_suspicious_pages_without_layout(
+                            pdf_path=str(temp_path),
+                            page_evaluations=retry_candidates,
+                        )
+                        retried_by_page = {
+                            int(evaluation["page_index"]): evaluation
+                            for evaluation in retried
                         }
+                        page_evaluations = [
+                            retried_by_page.get(int(evaluation["page_index"]), evaluation)
+                            for evaluation in page_evaluations
+                        ]
+                        ocr_metrics = parser._merge_ocr_metric_summaries(
+                            ocr_metrics,
+                            retry_metrics,
+                        )
+
+                ocr_results = [
+                    (int(evaluation["page_index"]), str(evaluation.get("raw_html", "")))
+                    for evaluation in page_evaluations
+                ]
+                page_quality = {
+                    int(evaluation["page_index"]): {
+                        "quality_score": int(evaluation.get("quality_score", 50)),
+                        "suspicious": bool(evaluation.get("suspicious", False)),
+                        "reasons": [str(reason) for reason in evaluation.get("reasons", [])],
+                    }
+                    for evaluation in page_evaluations
+                }
+                ocr_seconds = time.time() - ocr_started_at
 
             pages = [
                 {

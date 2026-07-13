@@ -38,10 +38,13 @@ def test_materializes_warmed_live_artifacts_with_provenance(tmp_path: Path) -> N
 
     assert manifest["document_count"] == 1
     assert manifest["total_pages"] == 2
-    assert json.loads((output / "sample" / "glm_html_cache.json").read_text()) == {
-        "1": "one",
-        "2": "two",
-    }
+    cached_pages = json.loads(
+        (output / "sample" / "glm_html_cache.json").read_text()
+    )
+    assert cached_pages["1"].startswith("<!--eosin-page-metadata:")
+    assert cached_pages["1"].endswith("one")
+    assert cached_pages["2"].startswith("<!--eosin-page-metadata:")
+    assert cached_pages["2"].endswith("two")
     metadata = json.loads(
         (output / "sample" / "live_ocr_metadata.json").read_text()
     )

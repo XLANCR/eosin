@@ -16,6 +16,7 @@ from PIL import Image
 from eosin.backend.glm_request_policy import (
     ADAPTIVE_FREQ_PENALTIES,
     apply_glm_generation_policy,
+    glm_output_preference,
     glm_output_quality,
 )
 
@@ -178,7 +179,7 @@ def _response_to_content(response: dict, status_code: int) -> Optional[str]:
 def _process_with_adaptive_glm_retry(ocr_client, request: dict) -> tuple[dict, int]:
     best_response: dict | None = None
     best_status = 0
-    best_quality = "bad"
+    best_preference: tuple[int, int, int, int, int] | None = None
 
     for frequency_penalty in ADAPTIVE_FREQ_PENALTIES:
         attempt_request = apply_glm_generation_policy(
@@ -188,14 +189,15 @@ def _process_with_adaptive_glm_retry(ocr_client, request: dict) -> tuple[dict, i
         response, status_code = ocr_client.process(attempt_request)
         content = _response_to_content(response, status_code) or ""
         quality = glm_output_quality(content)
+        preference = glm_output_preference(content)
 
         if quality == "good":
             return response, status_code
 
-        if best_response is None or (quality == "suspicious" and best_quality == "bad"):
+        if best_preference is None or preference > best_preference:
             best_response = response
             best_status = status_code
-            best_quality = quality
+            best_preference = preference
 
     return best_response or {}, best_status
 

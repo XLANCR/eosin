@@ -35,6 +35,16 @@ def glm_output_quality(html: str) -> str:
     return "good"
 
 
+def glm_output_preference(html: str) -> tuple[int, int, int, int, int]:
+    """Rank retry outputs, including multiple attempts in the same quality class."""
+    quality_rank = {"bad": 0, "suspicious": 1, "good": 2}[glm_output_quality(html)]
+    runaway_chars = sum(len(match.group(0)) for match in _RUNAWAY_RE.finditer(html))
+    runaway_chars += sum(len(match.group(0)) for match in _RUNAWAY_PAIR_RE.finditer(html))
+    row_count = len(re.findall(r"<tr[\s>]", html))
+    has_table = int("<table" in html.lower())
+    return quality_rank, has_table, -runaway_chars, row_count, -len(html)
+
+
 def apply_glm_generation_policy(request_data: dict, *, frequency_penalty: float) -> dict:
     request_data["repetition_penalty"] = REPETITION_PENALTY
     request_data["frequency_penalty"] = frequency_penalty

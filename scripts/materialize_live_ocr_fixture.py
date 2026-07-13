@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,26 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _cache_html_with_page_metadata(page: Mapping[str, object]) -> str:
+    metadata = {
+        key: page.get(key)
+        for key in (
+            "quality_score",
+            "suspicious",
+            "reasons",
+            "provider",
+            "model",
+            "timing_ms",
+            "row_count",
+        )
+        if key in page
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(metadata, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    return f"<!--eosin-page-metadata:{encoded}-->{page.get('raw_html', '')}"
 
 
 def materialize_fixture(
@@ -56,7 +77,7 @@ def materialize_fixture(
             raise FileExistsError(f"fixture document already exists: {document_dir}")
         document_dir.mkdir()
         html_map = {
-            str(int(page.get("page_number", index + 1))): str(page.get("raw_html", ""))
+            str(int(page.get("page_number", index + 1))): _cache_html_with_page_metadata(page)
             for index, page in enumerate(pages)
             if isinstance(page, Mapping)
         }

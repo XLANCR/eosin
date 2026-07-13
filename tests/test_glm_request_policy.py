@@ -8,7 +8,18 @@ from eosin.backend.glm_request_policy import (
     glm_output_quality,
 )
 
-from tests.test_ocr_backends import FakePageLoader, make_image
+
+
+class FakePageLoader:
+    def build_request_from_image(self, _image, *, task_type: str) -> dict:
+        return {
+            "messages": [{"role": "user", "content": [{"type": "text", "text": task_type}]}],
+            "max_tokens": 100,
+        }
+
+
+def make_image() -> Image.Image:
+    return Image.new("RGB", (8, 8), "white")
 
 
 def test_eosin_glm_retry_policy_starts_at_zero_frequency_penalty() -> None:
@@ -61,3 +72,32 @@ def test_http_backend_retries_with_higher_frequency_penalty_on_repetition() -> N
 
     assert [request["frequency_penalty"] for request in client.requests] == [0.0, 0.10]
     assert result.content == "<table><tr><td>Date</td></tr><tr><td>01/01/2024</td></tr></table>"
+
+
+def test_http_backend_keeps_least_repetitive_bad_retry() -> None:
+    from eosin.backend.ocr_pipeline import HTTPDocumentOCRBackend
+
+    class BadRetryOCRClient:
+        def __init__(self) -> None:
+            self.requests: list[dict] = []
+
+        def process(self, request: dict) -> tuple[dict, int]:
+            self.requests.append(dict(request))
+            repeats = 500 if len(self.requests) == 1 else 30
+            content = "<table><tr><td>" + ("AB" * repeats) + "</td></tr></table>"
+            return {"choices": [{"message": {"content": content}}]}, 200
+
+    client = BadRetryOCRClient()
+    backend = HTTPDocumentOCRBackend(
+        page_loader=FakePageLoader(),
+        ocr_client=client,
+        max_workers=1,
+        queue_size=8,
+    )
+    try:
+        result = backend.submit([make_image()], page_indices=[0], task_type="table").result(timeout=2)
+    finally:
+        backend.close()
+
+    assert len(client.requests) == len(ADAPTIVE_FREQ_PENALTIES)
+    assert result.content == "<table><tr><td>" + ("AB" * 30) + "</td></tr></table>"

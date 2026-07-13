@@ -7,6 +7,7 @@ def test_modal_defaults_to_sglang_and_documents_rollback_image() -> None:
     assert "EOSIN_MODAL_INFERENCE_BACKEND=sglang" in env_example
     assert "EOSIN_MODAL_VLLM_IMAGE=vllm/vllm-openai:v0.19.0-ubuntu2404" in env_example
     assert "EOSIN_MODAL_SGLANG_IMAGE=lmsysorg/sglang:v0.5.10" in env_example
+    assert "EOSIN_MODAL_SGLANG_ENABLE_SPECULATIVE=true" in env_example
 
 
 def test_modal_supports_isolated_sglang_benchmarks() -> None:
@@ -17,4 +18,19 @@ def test_modal_supports_isolated_sglang_benchmarks() -> None:
     assert '"--speculative-algorithm",' in modal_app
     assert '"NEXTN",' in modal_app
     assert '"SGLANG_ENABLE_SPEC_V2": "1"' in modal_app
+    assert 'SGLANG_ENABLE_SPECULATIVE = _env_bool(' in modal_app
+    assert "if SGLANG_ENABLE_SPECULATIVE:" in modal_app
+    assert '"true" if SGLANG_ENABLE_SPECULATIVE else "false"' in modal_app
     assert '"EOSIN_MODAL_INFERENCE_BACKEND": INFERENCE_BACKEND' in modal_app
+
+
+def test_vllm_quality_controls_are_explicitly_toggleable() -> None:
+    env_example = Path(".env.example").read_text()
+    modal_app = Path("modal_app.py").read_text()
+
+    assert "EOSIN_MODAL_VLLM_ENABLE_ASYNC_SCHEDULING=true" in env_example
+    assert "EOSIN_MODAL_VLLM_ENABLE_CHUNKED_PREFILL=true" in env_example
+    assert '"EOSIN_MODAL_VLLM_ENABLE_ASYNC_SCHEDULING"' in modal_app
+    assert '"EOSIN_MODAL_VLLM_ENABLE_CHUNKED_PREFILL"' in modal_app
+    assert "if VLLM_ENABLE_ASYNC_SCHEDULING:" in modal_app
+    assert "if VLLM_ENABLE_CHUNKED_PREFILL:" in modal_app

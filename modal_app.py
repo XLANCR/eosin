@@ -72,7 +72,13 @@ VLLM_SPECULATIVE_CONFIG = os.getenv(
     "EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG",
     '{"method": "mtp", "num_speculative_tokens": 3}',
 )
+SGLANG_ENABLE_SPECULATIVE = _env_bool(
+    "EOSIN_MODAL_SGLANG_ENABLE_SPECULATIVE",
+    True,
+)
 VLLM_ENABLE_PREFIX_CACHING = _env_bool("EOSIN_MODAL_VLLM_ENABLE_PREFIX_CACHING", True)
+VLLM_ENABLE_ASYNC_SCHEDULING = _env_bool("EOSIN_MODAL_VLLM_ENABLE_ASYNC_SCHEDULING", True)
+VLLM_ENABLE_CHUNKED_PREFILL = _env_bool("EOSIN_MODAL_VLLM_ENABLE_CHUNKED_PREFILL", True)
 VLLM_KV_CACHE_METRICS = _env_bool("EOSIN_MODAL_VLLM_KV_CACHE_METRICS", True)
 VLLM_ENABLE_MFU_METRICS = _env_bool("EOSIN_MODAL_VLLM_ENABLE_MFU_METRICS", True)
 VLLM_ENABLE_LOGGING_ITERATION_DETAILS = _env_bool("EOSIN_MODAL_VLLM_ENABLE_LOGGING_ITERATION_DETAILS", False)
@@ -146,6 +152,9 @@ image = (
         {
             "PYTHONPATH": "/root/eosin:/root",
             "EOSIN_MODAL_INFERENCE_BACKEND": INFERENCE_BACKEND,
+            "EOSIN_MODAL_SGLANG_ENABLE_SPECULATIVE": (
+                "true" if SGLANG_ENABLE_SPECULATIVE else "false"
+            ),
             "HF_HOME": HF_CACHE_PATH,
             "HF_XET_HIGH_PERFORMANCE": os.getenv("EOSIN_MODAL_HF_XET_HIGH_PERFORMANCE", "1"),
             "VLLM_CACHE_ROOT": VLLM_CACHE_PATH,
@@ -397,16 +406,21 @@ class BankParserModalApp:
                 VLLM_GPU_MEMORY_UTILIZATION,
                 "--max-running-requests",
                 VLLM_MAX_NUM_SEQS,
-                "--speculative-algorithm",
-                "NEXTN",
-                "--speculative-num-steps",
-                "3",
-                "--speculative-eagle-topk",
-                "1",
-                "--speculative-num-draft-tokens",
-                "4",
             ]
-            backend_env = {**os.environ, "SGLANG_ENABLE_SPEC_V2": "1"}
+            if SGLANG_ENABLE_SPECULATIVE:
+                vllm_args.extend(
+                    [
+                        "--speculative-algorithm",
+                        "NEXTN",
+                        "--speculative-num-steps",
+                        "3",
+                        "--speculative-eagle-topk",
+                        "1",
+                        "--speculative-num-draft-tokens",
+                        "4",
+                    ]
+                )
+                backend_env = {**os.environ, "SGLANG_ENABLE_SPEC_V2": "1"}
         else:
             vllm_args = [
                 "vllm",
@@ -428,8 +442,6 @@ class BankParserModalApp:
                 VLLM_MAX_NUM_SEQS,
                 "--max-num-batched-tokens",
                 VLLM_MAX_BATCHED_TOKENS,
-                "--async-scheduling",
-                "--enable-chunked-prefill",
                 "--served-model-name",
                 VLLM_SERVED_MODEL_NAME,
             ]
@@ -437,6 +449,10 @@ class BankParserModalApp:
                 vllm_args.extend(["--revision", VLLM_MODEL_REVISION])
             if VLLM_SPECULATIVE_CONFIG:
                 vllm_args.extend(["--speculative-config", VLLM_SPECULATIVE_CONFIG])
+            if VLLM_ENABLE_ASYNC_SCHEDULING:
+                vllm_args.append("--async-scheduling")
+            if VLLM_ENABLE_CHUNKED_PREFILL:
+                vllm_args.append("--enable-chunked-prefill")
             if VLLM_FAST_BOOT:
                 vllm_args.append("--enforce-eager")
             else:

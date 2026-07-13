@@ -78,6 +78,37 @@ class FakeDirectOCRParser(FakeParser):
         }
 
 
+class CriticalRetryParser(FakeDirectOCRParser):
+    def _evaluate_page_ocr_result(self, *, page_idx, html_content, expected_headers, pass_label):
+        result = super()._evaluate_page_ocr_result(
+            page_idx=page_idx,
+            html_content=html_content,
+            expected_headers=expected_headers,
+            pass_label=pass_label,
+        )
+        if page_idx == 1:
+            result["reasons"] = ["money_in_non_amount_columns"]
+        return result
+
+    def _retry_suspicious_pages_without_layout(self, *, pdf_path, page_evaluations):
+        assert pdf_path.endswith(".pdf")
+        assert [item["page_index"] for item in page_evaluations] == [1]
+        return [{
+            **page_evaluations[0],
+            "raw_html": "<table><tr><td>repaired-page-2</td></tr></table>",
+            "quality_score": 100,
+            "suspicious": False,
+            "reasons": [],
+        }], {"task_count": 1.0, "success_count": 1.0}
+
+    @staticmethod
+    def _merge_ocr_metric_summaries(primary, retry):
+        return {
+            "task_count": primary.get("task_count", 0) + retry.get("task_count", 0),
+            "success_count": primary.get("success_count", 0) + retry.get("success_count", 0),
+        }
+
+
 class CountingParser:
     lock = threading.Lock()
     active = 0
@@ -320,6 +351,34 @@ def test_document_evidence_uses_text_ocr_for_invoice(monkeypatch) -> None:
     assert payload["ocr_task_type"] == "text"
     assert payload["pages"][0]["quality_score"] == 100
     assert payload["pages"][0]["suspicious"] is False
+
+
+def test_document_evidence_retries_only_critical_table_pages(monkeypatch) -> None:
+    def fake_build_parser(self):
+        return CriticalRetryParser(1, threading.Barrier(1))
+
+    class FakeDocument:
+        page_count = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
+    monkeypatch.setattr("eosin.backend.bank_parser_service.fitz.open", lambda _path: FakeDocument())
+
+    service = BankParserService(parser_pool_size=1)
+    try:
+        payload = service.extract_glm_page_html_bytes("statement.pdf", b"fake pdf")
+    finally:
+        service.close()
+
+    assert payload["pages"][0]["raw_html"].endswith("page-1</td></tr></table>")
+    assert payload["pages"][1]["raw_html"].endswith("repaired-page-2</td></tr></table>")
+    assert payload["pages"][1]["suspicious"] is False
+    assert payload["ocr_metrics"]["task_count"] == 3.0
 
 
 def test_evidence_payload_preserves_direct_extraction_page_contract() -> None:
