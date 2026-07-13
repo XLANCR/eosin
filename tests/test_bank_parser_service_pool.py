@@ -42,6 +42,7 @@ class FakeParser:
 
 class FakeDirectOCRParser(FakeParser):
     pdf_dpi = 200
+    last_task_type = None
 
     def _render_specific_pages(self, _pdf_path: str, page_indices, _dpi: int):
         return {page_idx: Image.new("RGB", (8, 8), "white") for page_idx in page_indices}
@@ -49,7 +50,8 @@ class FakeDirectOCRParser(FakeParser):
     def _normalize_ocr_image(self, image: Image.Image) -> Image.Image:
         return image
 
-    def _ocr_tables_parallel(self, ocr_images):
+    def _ocr_tables_parallel(self, ocr_images, *, task_type="table"):
+        self.last_task_type = task_type
         return [
             (page_idx, f"<table><tr><td>page-{page_idx + 1}</td></tr></table>")
             for page_idx, _ in ocr_images
@@ -284,6 +286,40 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
     ]
     assert payload["timings"]["ocr_pages"] == 0.75
     assert payload["ocr_metrics"]["task_count"] == 2.0
+
+
+def test_document_evidence_uses_text_ocr_for_invoice(monkeypatch) -> None:
+    created: list[FakeDirectOCRParser] = []
+
+    def fake_build_parser(self):
+        parser = FakeDirectOCRParser(len(created) + 1, threading.Barrier(1))
+        created.append(parser)
+        return parser
+
+    class FakeDocument:
+        page_count = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(BankParserService, "_build_parser", fake_build_parser)
+    monkeypatch.setattr("eosin.backend.bank_parser_service.fitz.open", lambda _path: FakeDocument())
+
+    service = BankParserService(parser_pool_size=1)
+    try:
+        payload = service.extract_glm_page_html_bytes(
+            "invoice.pdf", b"fake pdf", task_type="text"
+        )
+    finally:
+        service.close()
+
+    assert created[0].last_task_type == "text"
+    assert payload["ocr_task_type"] == "text"
+    assert payload["pages"][0]["quality_score"] == 100
+    assert payload["pages"][0]["suspicious"] is False
 
 
 def test_evidence_payload_preserves_direct_extraction_page_contract() -> None:

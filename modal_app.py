@@ -54,6 +54,12 @@ MEMORY_MIB = int(os.getenv("EOSIN_MODAL_MEMORY_MIB", "32768"))
 OCR_PIPELINE_WORKERS = int(os.getenv("EOSIN_MODAL_OCR_PIPELINE_WORKERS", "16"))
 OCR_PIPELINE_QUEUE_SIZE = int(os.getenv("EOSIN_MODAL_OCR_PIPELINE_QUEUE_SIZE", "512"))
 PARSER_POOL_SIZE = int(os.getenv("EOSIN_MODAL_PARSER_POOL_SIZE", "2"))
+INFERENCE_BACKEND = os.getenv("EOSIN_MODAL_INFERENCE_BACKEND", "sglang").strip().lower()
+if INFERENCE_BACKEND not in {"vllm", "sglang"}:
+    raise ValueError("EOSIN_MODAL_INFERENCE_BACKEND must be vllm or sglang")
+VLLM_IMAGE = os.getenv("EOSIN_MODAL_VLLM_IMAGE", "vllm/vllm-openai:v0.19.0-ubuntu2404")
+SGLANG_IMAGE = os.getenv("EOSIN_MODAL_SGLANG_IMAGE", "lmsysorg/sglang:v0.5.10")
+INFERENCE_IMAGE = SGLANG_IMAGE if INFERENCE_BACKEND == "sglang" else VLLM_IMAGE
 VLLM_PORT = int(os.getenv("EOSIN_MODAL_VLLM_PORT", "8000"))
 VLLM_MODEL = os.getenv("EOSIN_MODAL_VLLM_MODEL", "zai-org/GLM-OCR")
 VLLM_MODEL_REVISION = os.getenv("EOSIN_MODAL_VLLM_MODEL_REVISION", "").strip()
@@ -118,7 +124,7 @@ vllm_cache_volume = modal.Volume.from_name("eosin-vllm-cache", create_if_missing
 
 image = (
     modal.Image.from_registry(
-        "vllm/vllm-openai:v0.19.0-ubuntu2404",
+        INFERENCE_IMAGE,
         setup_dockerfile_commands=["ENTRYPOINT []"],
     )
     .run_commands(
@@ -139,6 +145,7 @@ image = (
     .env(
         {
             "PYTHONPATH": "/root/eosin:/root",
+            "EOSIN_MODAL_INFERENCE_BACKEND": INFERENCE_BACKEND,
             "HF_HOME": HF_CACHE_PATH,
             "HF_XET_HIGH_PERFORMANCE": os.getenv("EOSIN_MODAL_HF_XET_HIGH_PERFORMANCE", "1"),
             "VLLM_CACHE_ROOT": VLLM_CACHE_PATH,
@@ -367,67 +374,100 @@ class BankParserModalApp:
 
     def _launch_vllm(self) -> None:
         self.vllm_started_at = time.monotonic()
-        vllm_args = [
-            "vllm",
-            "serve",
-            VLLM_MODEL,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(VLLM_PORT),
-            "--uvicorn-log-level=info",
-            "--dtype",
-            "bfloat16",
-            "--trust-remote-code",
-            "--max-model-len",
-            VLLM_MAX_MODEL_LEN,
-            "--gpu-memory-utilization",
-            VLLM_GPU_MEMORY_UTILIZATION,
-            "--max-num-seqs",
-            VLLM_MAX_NUM_SEQS,
-            "--max-num-batched-tokens",
-            VLLM_MAX_BATCHED_TOKENS,
-            "--async-scheduling",
-            "--enable-chunked-prefill",
-            "--served-model-name",
-            VLLM_SERVED_MODEL_NAME,
-        ]
-        if VLLM_MODEL_REVISION:
-            vllm_args.extend(["--revision", VLLM_MODEL_REVISION])
-        if VLLM_SPECULATIVE_CONFIG:
-            vllm_args.extend(["--speculative-config", VLLM_SPECULATIVE_CONFIG])
-        if VLLM_FAST_BOOT:
-            vllm_args.append("--enforce-eager")
+        backend_env = None
+        if INFERENCE_BACKEND == "sglang":
+            vllm_args = [
+                "sglang",
+                "serve",
+                "--model-path",
+                VLLM_MODEL,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(VLLM_PORT),
+                "--served-model-name",
+                VLLM_SERVED_MODEL_NAME,
+                "--trust-remote-code",
+                "--dtype",
+                "bfloat16",
+                "--context-length",
+                VLLM_MAX_MODEL_LEN,
+                "--mem-fraction-static",
+                VLLM_GPU_MEMORY_UTILIZATION,
+                "--max-running-requests",
+                VLLM_MAX_NUM_SEQS,
+                "--speculative-algorithm",
+                "NEXTN",
+                "--speculative-num-steps",
+                "3",
+                "--speculative-eagle-topk",
+                "1",
+                "--speculative-num-draft-tokens",
+                "4",
+            ]
+            backend_env = {**os.environ, "SGLANG_ENABLE_SPEC_V2": "1"}
         else:
-            vllm_args.append("--no-enforce-eager")
-        if VLLM_ENABLE_SLEEP_MODE:
-            vllm_args.append("--enable-sleep-mode")
-        if VLLM_ATTENTION_BACKEND:
-            vllm_args.extend(["--attention-backend", VLLM_ATTENTION_BACKEND])
-        if VLLM_ENABLE_PREFIX_CACHING:
-            vllm_args.append("--enable-prefix-caching")
-        if VLLM_KV_CACHE_METRICS:
-            vllm_args.append("--kv-cache-metrics")
-        if VLLM_ENABLE_MFU_METRICS:
-            vllm_args.append("--enable-mfu-metrics")
-        if VLLM_ENABLE_SERVER_LOAD_TRACKING:
-            vllm_args.append("--enable-server-load-tracking")
-        if VLLM_ENABLE_LOGGING_ITERATION_DETAILS:
-            vllm_args.append("--enable-logging-iteration-details")
-        if VLLM_ENABLE_LOG_REQUESTS:
-            vllm_args.append("--enable-log-requests")
-        self.vllm_process = subprocess.Popen(vllm_args, text=True)
-        print("Started vLLM subprocess", flush=True)
+            vllm_args = [
+                "vllm",
+                "serve",
+                VLLM_MODEL,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(VLLM_PORT),
+                "--uvicorn-log-level=info",
+                "--dtype",
+                "bfloat16",
+                "--trust-remote-code",
+                "--max-model-len",
+                VLLM_MAX_MODEL_LEN,
+                "--gpu-memory-utilization",
+                VLLM_GPU_MEMORY_UTILIZATION,
+                "--max-num-seqs",
+                VLLM_MAX_NUM_SEQS,
+                "--max-num-batched-tokens",
+                VLLM_MAX_BATCHED_TOKENS,
+                "--async-scheduling",
+                "--enable-chunked-prefill",
+                "--served-model-name",
+                VLLM_SERVED_MODEL_NAME,
+            ]
+            if VLLM_MODEL_REVISION:
+                vllm_args.extend(["--revision", VLLM_MODEL_REVISION])
+            if VLLM_SPECULATIVE_CONFIG:
+                vllm_args.extend(["--speculative-config", VLLM_SPECULATIVE_CONFIG])
+            if VLLM_FAST_BOOT:
+                vllm_args.append("--enforce-eager")
+            else:
+                vllm_args.append("--no-enforce-eager")
+            if VLLM_ENABLE_SLEEP_MODE:
+                vllm_args.append("--enable-sleep-mode")
+            if VLLM_ATTENTION_BACKEND:
+                vllm_args.extend(["--attention-backend", VLLM_ATTENTION_BACKEND])
+            if VLLM_ENABLE_PREFIX_CACHING:
+                vllm_args.append("--enable-prefix-caching")
+            if VLLM_KV_CACHE_METRICS:
+                vllm_args.append("--kv-cache-metrics")
+            if VLLM_ENABLE_MFU_METRICS:
+                vllm_args.append("--enable-mfu-metrics")
+            if VLLM_ENABLE_SERVER_LOAD_TRACKING:
+                vllm_args.append("--enable-server-load-tracking")
+            if VLLM_ENABLE_LOGGING_ITERATION_DETAILS:
+                vllm_args.append("--enable-logging-iteration-details")
+            if VLLM_ENABLE_LOG_REQUESTS:
+                vllm_args.append("--enable-log-requests")
+        self.vllm_process = subprocess.Popen(vllm_args, text=True, env=backend_env)
+        print(f"Started {INFERENCE_BACKEND} subprocess", flush=True)
 
     def _await_vllm_ready(self) -> None:
-        print("Waiting for vLLM readiness", flush=True)
+        print(f"Waiting for {INFERENCE_BACKEND} readiness", flush=True)
         _wait_for_http_health(
             VLLM_HEALTH_URL,
             timeout_seconds=STARTUP_TIMEOUT_SECONDS,
             process=self.vllm_process,
         )
         print(
-            "vLLM startup phase completed in "
+            f"{INFERENCE_BACKEND} startup phase completed in "
             f"{time.monotonic() - self.vllm_started_at:.3f}s",
             flush=True,
         )
@@ -496,6 +536,26 @@ class BankParserModalApp:
         return evidence_payload_from_result(
             self.service.extract_glm_page_html_bytes(filename, pdf_bytes)
         )
+
+    @modal.method()
+    def extract_document_evidence(
+        self, filename: str, pdf_bytes: bytes, document_type: str
+    ) -> dict:
+        from eosin.backend.bank_parser_api import evidence_payload_from_result, validate_pdf_upload
+
+        normalized_type = document_type.strip().lower().replace("-", "_")
+        if normalized_type not in {"bank_statement", "invoice", "receipt"}:
+            raise ValueError("document_type must be bank_statement, invoice, or receipt")
+        validate_pdf_upload(filename, pdf_bytes)
+        result = self.service.extract_glm_page_html_bytes(
+            filename,
+            pdf_bytes,
+            task_type="table" if normalized_type == "bank_statement" else "text",
+        )
+        payload = evidence_payload_from_result(result)
+        payload["document_type"] = normalized_type
+        payload["ocr_task_type"] = result.get("ocr_task_type", "table")
+        return payload
 
     @modal.method()
     def extract_glm_page_html(

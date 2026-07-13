@@ -2743,6 +2743,8 @@ class BankStatementParser:
     def _ocr_tables_parallel(
         self,
         stitched_images: List[Tuple[int, Image.Image]],
+        *,
+        task_type: str = "table",
     ) -> Tuple[List[Tuple[int, Optional[str]]], Dict[str, float]]:
         if not stitched_images:
             return [], self._empty_ocr_metrics()
@@ -2756,7 +2758,7 @@ class BankStatementParser:
             f"{self._resolve_ocr_batch_workers(len(stitched_images))} worker(s)"
         )
         for page_idx, image in stitched_images:
-            future = self._submit_ocr_task(image, page_index=page_idx, task_type="table")
+            future = self._submit_ocr_task(image, page_index=page_idx, task_type=task_type)
             submitted_tasks[future] = page_idx
 
         for future in as_completed(submitted_tasks):

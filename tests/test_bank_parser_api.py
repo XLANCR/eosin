@@ -44,7 +44,9 @@ class FakeService:
 
 
 class FakeEvidenceService(FakeService):
-    def extract_glm_page_html_bytes(self, filename: str, pdf_bytes: bytes) -> dict:
+    def extract_glm_page_html_bytes(
+        self, filename: str, pdf_bytes: bytes, *, task_type: str = "table"
+    ) -> dict:
         from eosin.backend.bank_parser_api import validate_pdf_upload
 
         page_count = validate_pdf_upload(filename, pdf_bytes)
@@ -54,6 +56,7 @@ class FakeEvidenceService(FakeService):
             "pages": [],
             "timings": {},
             "ocr_metrics": {},
+            "ocr_task_type": task_type,
         }
 
 
@@ -148,6 +151,36 @@ def test_evidence_endpoint_accepts_pdf_above_retired_limits(monkeypatch) -> None
     response = asyncio.run(endpoint(upload))
 
     assert response["page_count"] == 2
+
+
+def test_document_evidence_endpoint_selects_text_ocr_for_invoice(monkeypatch) -> None:
+    from eosin.backend import bank_parser_api
+
+    async def run_inline(function):
+        return function()
+
+    monkeypatch.setattr(bank_parser_api, "run_in_threadpool", run_inline)
+    app = bank_parser_api.create_app(service=FakeEvidenceService())
+    endpoint = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v2/extract/document-evidence"
+    )
+
+    class AsyncUpload:
+        filename = "invoice.pdf"
+
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def read(self, size: int = -1) -> bytes:
+            content, self._content = self._content, b""
+            return content
+
+    response = asyncio.run(endpoint(AsyncUpload(_minimal_pdf()), "invoice"))
+
+    assert response["document_type"] == "invoice"
+    assert response["ocr_task_type"] == "text"
 
 
 def test_timeout_error_maps_to_503() -> None:

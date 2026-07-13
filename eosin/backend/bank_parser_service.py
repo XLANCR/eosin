@@ -258,6 +258,7 @@ class BankParserService:
         page_numbers: list[int] | None = None,
         *,
         dpi: int | None = None,
+        task_type: str = "table",
     ) -> dict[str, Any]:
         """Return raw GLM table HTML per page with quality metadata.
 
@@ -294,7 +295,9 @@ class BankParserService:
                     for page_idx in sorted(rendered_pages)
                 ]
                 ocr_started_at = time.time()
-                ocr_results, ocr_metrics = parser._ocr_tables_parallel(ocr_images)
+                ocr_results, ocr_metrics = parser._ocr_tables_parallel(
+                    ocr_images, task_type=task_type
+                )
                 ocr_seconds = time.time() - ocr_started_at
 
                 # Quality evaluation per page (lightweight: no DataFrame assembly)
@@ -302,6 +305,15 @@ class BankParserService:
                 for page_idx, html in ocr_results:
                     if not html:
                         page_quality[page_idx] = {"quality_score": 0, "suspicious": True, "reasons": ["empty_ocr_output"]}
+                        continue
+                    if task_type == "text":
+                        usable_text = str(html).strip()
+                        suspicious = len(usable_text) < 20
+                        page_quality[page_idx] = {
+                            "quality_score": 25 if suspicious else 100,
+                            "suspicious": suspicious,
+                            "reasons": ["short_text_output"] if suspicious else [],
+                        }
                         continue
                     try:
                         evaluation = parser._evaluate_page_ocr_result(
@@ -345,6 +357,7 @@ class BankParserService:
                     "service_total": round(time.time() - started_at, 3),
                 },
                 "ocr_metrics": ocr_metrics,
+                "ocr_task_type": task_type,
             }
         finally:
             temp_path.unlink(missing_ok=True)

@@ -19,12 +19,18 @@ bounded container concurrency, parser-pool admission timeout, maximum container
 count, and function timeout. `/health` is liveness; `/ready` checks
 parser-service readiness and returns `503` when the service cannot accept work.
 
+Bank statements use `POST /v2/extract/bank-statement-evidence`. Invoices and
+receipts use `POST /v2/extract/document-evidence` with multipart
+`document_type=invoice|receipt`; those types run full-page text OCR instead of
+bank-table OCR. The API and Celery worker carry this explicit type through the
+request, and only normalized document fields are persisted.
+
 ### Modal runtime shape
 
 - A deployment is capped at one GPU container. That container accepts up to 35 queued inputs; it does not create one container per PDF.
-- Two parser instances bound CPU/layout work and feed up to 16 concurrent page OCR requests into vLLM continuous batching. The batch-drain window is 50 ms.
-- vLLM serves GLM-OCR on the L40S with MTP-3, `max_num_seqs=196`, prefix caching, async scheduling, and chunked prefill. MTP can be disabled through an empty `EOSIN_MODAL_VLLM_SPECULATIVE_CONFIG` for isolated benchmarks.
-- Cold startup launches vLLM before parser imports so model startup and CPU preparation overlap. Cache volumes are committed only when explicitly seeding them; unchanged volumes are not committed on every production start.
+- Two parser instances bound CPU/layout work and feed up to 16 concurrent page OCR requests into the selected inference server's continuous batching. The batch-drain window is 50 ms.
+- `EOSIN_MODAL_INFERENCE_BACKEND=sglang|vllm` selects the OpenAI-compatible GLM-OCR server. SGLang is the production default and uses the GLM-OCR NEXTN speculative-decoding recipe; vLLM remains the explicit rollback path with MTP-3, `max_num_seqs=196`, prefix caching, async scheduling, and chunked prefill. Deploy backend comparisons under a separate app name before changing production.
+- Cold startup launches the inference server before parser imports so model startup and CPU preparation overlap. Cache volumes are committed only when explicitly seeding them; unchanged volumes are not committed on every production start.
 - GPU memory snapshots remain disabled because the previous vLLM/NCCL experiment was unstable. Production statement OCR and parser outputs are never persisted as caches.
 - Do not poll `/health` to keep a serverless container warm. Use direct parser traffic and push-based metrics; readiness checks are for deployment/load-balancer control only.
 

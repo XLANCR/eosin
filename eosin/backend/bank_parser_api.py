@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import fitz
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
@@ -226,6 +226,45 @@ def create_app(service: Optional[BankParserService] = None) -> FastAPI:
                 lambda: get_service().extract_glm_page_html_bytes(filename, pdf_bytes)
             )
             payload = evidence_payload_from_result(result)
+            metrics_manager.track_request_success(payload)
+            return payload
+        except TimeoutError as exc:
+            metrics_manager.track_request_failure("timeout")
+            raise http_exception_for_timeout(exc) from exc
+        except Exception:
+            metrics_manager.track_request_failure("exception")
+            raise
+        finally:
+            metrics_manager.track_request_finished(time.perf_counter() - started_at)
+            metrics_manager.schedule_push()
+
+    @app.post("/v2/extract/document-evidence")
+    async def extract_document_evidence(
+        file: UploadFile = File(...),
+        document_type: str = Form(...),
+    ):
+        normalized_type = document_type.strip().lower().replace("-", "_")
+        if normalized_type not in {"bank_statement", "invoice", "receipt"}:
+            raise HTTPException(
+                status_code=400,
+                detail="document_type must be bank_statement, invoice, or receipt",
+            )
+        filename, pdf_bytes = await read_pdf_upload(file)
+        validate_pdf_upload(filename, pdf_bytes)
+        metrics_manager = app.state.metrics_manager
+        metrics_manager.track_request_started(len(pdf_bytes))
+        started_at = time.perf_counter()
+        try:
+            result = await run_in_threadpool(
+                lambda: get_service().extract_glm_page_html_bytes(
+                    filename,
+                    pdf_bytes,
+                    task_type="table" if normalized_type == "bank_statement" else "text",
+                )
+            )
+            payload = evidence_payload_from_result(result)
+            payload["document_type"] = normalized_type
+            payload["ocr_task_type"] = result.get("ocr_task_type", "table")
             metrics_manager.track_request_success(payload)
             return payload
         except TimeoutError as exc:
