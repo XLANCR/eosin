@@ -31,7 +31,8 @@ request, and only normalized document fields are persisted.
 - Two parser instances bound CPU/layout work and feed up to 16 concurrent page OCR requests into the selected inference server's continuous batching. The batch-drain window is 50 ms.
 - `EOSIN_MODAL_INFERENCE_BACKEND=sglang|vllm` selects the OpenAI-compatible GLM-OCR server. SGLang is the production default and uses the GLM-OCR NEXTN speculative-decoding recipe; vLLM remains the explicit rollback path with MTP-3, `max_num_seqs=196`, prefix caching, async scheduling, and chunked prefill. Deploy backend comparisons under a separate app name before changing production.
 - Cold startup launches the inference server before parser imports so model startup and CPU preparation overlap. Cache volumes are committed only when explicitly seeding them; unchanged volumes are not committed on every production start.
-- GPU memory snapshots remain disabled because the previous vLLM/NCCL experiment was unstable. Production statement OCR and parser outputs are never persisted as caches.
+- GPU memory snapshots remain disabled. Controlled SGLang snapshot tests reduced cold restore time but regressed warmed AU document throughput, so the experimental lifecycle is not part of the production path. Production statement OCR and parser outputs are never persisted as caches.
+- Single-page OCR keeps the GLM-OCR 7,000-token default. `BANK_PARSER_OCR_PAGE_MAX_TOKENS` is an experiment control; a 4,096-token AU run preserved 6-page parser quality but regressed the harder 16-page document, so do not lower the production default without corpus-level evidence.
 - Do not poll `/health` to keep a serverless container warm. Use direct parser traffic and push-based metrics; readiness checks are for deployment/load-balancer control only.
 
 ### Direct Modal benchmark

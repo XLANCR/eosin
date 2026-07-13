@@ -21,6 +21,7 @@ from eosin.backend.glm_request_policy import (
 
 
 DOCUMENT_MAX_TOKENS_CAP = 4_096
+PAGE_MAX_TOKENS_CAP = 7_000
 MULTI_PAGE_TABLE_PROMPT = (
     " These images are ordered continuation pages from the same bank statement "
     "transaction table. Return one HTML table containing every transaction row "
@@ -38,6 +39,16 @@ def _resolve_document_max_tokens_cap() -> int:
         return max(1, int(raw_value))
     except ValueError:
         return DOCUMENT_MAX_TOKENS_CAP
+
+
+def _resolve_page_max_tokens_cap() -> int:
+    raw_value = os.getenv("BANK_PARSER_OCR_PAGE_MAX_TOKENS", "").strip()
+    if not raw_value:
+        return PAGE_MAX_TOKENS_CAP
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return PAGE_MAX_TOKENS_CAP
 
 
 @dataclass(frozen=True)
@@ -139,12 +150,15 @@ def build_document_request(page_loader, images: Sequence[Image.Image], *, task_t
         }
     ]
     base_max_tokens = request.get("max_tokens")
-    if isinstance(base_max_tokens, int) and base_max_tokens > 0 and len(images) > 1:
-        scaled_max_tokens = base_max_tokens * len(images)
-        request["max_tokens"] = max(
-            base_max_tokens,
-            min(_resolve_document_max_tokens_cap(), scaled_max_tokens),
-        )
+    if isinstance(base_max_tokens, int) and base_max_tokens > 0:
+        base_max_tokens = min(base_max_tokens, _resolve_page_max_tokens_cap())
+        request["max_tokens"] = base_max_tokens
+        if len(images) > 1:
+            scaled_max_tokens = base_max_tokens * len(images)
+            request["max_tokens"] = max(
+                base_max_tokens,
+                min(_resolve_document_max_tokens_cap(), scaled_max_tokens),
+            )
     return request
 
 
