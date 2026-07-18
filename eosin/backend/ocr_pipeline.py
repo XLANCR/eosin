@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -74,6 +75,7 @@ class DocumentOCRTaskResult:
     batch_size: int
     flush_reason: str
     backend_name: str
+    error: str | None = None
 
     @property
     def content(self) -> Optional[str]:
@@ -176,6 +178,13 @@ def _response_to_content(response: dict, status_code: int) -> Optional[str]:
     return text or None
 
 
+def _response_error(response: dict, status_code: int) -> str | None:
+    if status_code == 200:
+        return None
+    detail = response.get("error", response.get("detail", response))
+    return json.dumps(detail, sort_keys=True, default=str)[:500]
+
+
 def _process_with_adaptive_glm_retry(ocr_client, request: dict) -> tuple[dict, int]:
     best_response: dict | None = None
     best_status = 0
@@ -231,6 +240,7 @@ def _build_task_result(
         batch_size=batch_size,
         flush_reason=flush_reason,
         backend_name=backend_name,
+        error=_response_error(response, status_code),
     )
 
 

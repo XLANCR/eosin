@@ -127,6 +127,11 @@ METRICS_PUSH_SOCKS5_URL = os.getenv("EOSIN_MODAL_METRICS_PUSH_SOCKS5_URL", TAILS
 app = modal.App(APP_NAME)
 hf_cache_volume = modal.Volume.from_name("eosin-hf-cache", create_if_missing=True)
 vllm_cache_volume = modal.Volume.from_name("eosin-vllm-cache", create_if_missing=True)
+modal_secrets = []
+if TAILSCALE_ENABLE:
+    modal_secrets.append(modal.Secret.from_name("eosin-tailscale"))
+if METRICS_PUSH_ENABLE:
+    modal_secrets.append(modal.Secret.from_name("eosin-metrics-push"))
 
 image = (
     modal.Image.from_registry(
@@ -350,10 +355,7 @@ def _start_tailscale() -> tuple[subprocess.Popen[str], subprocess.CompletedProce
     volumes={HF_CACHE_PATH: hf_cache_volume, VLLM_CACHE_PATH: vllm_cache_volume},
     enable_memory_snapshot=False,
     experimental_options={},
-    secrets=[
-        modal.Secret.from_name("eosin-tailscale"),
-        modal.Secret.from_name("eosin-metrics-push"),
-    ],
+    secrets=modal_secrets,
 )
 @modal.concurrent(max_inputs=MAX_INPUTS, target_inputs=TARGET_INPUTS)
 class BankParserModalApp:

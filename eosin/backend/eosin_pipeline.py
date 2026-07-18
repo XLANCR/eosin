@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+from collections import Counter
 from concurrent.futures import Future, as_completed
 from contextlib import nullcontext
 from pathlib import Path
@@ -2811,6 +2812,11 @@ class BankStatementParser:
             else:
                 weighted_total = sum(item.get(key, 0.0) * item.get("task_count", 0.0) for item in valid_sets)
                 summary[key] = round(weighted_total / total_tasks, 6)
+        for key in ("status_code_counts", "error_counts"):
+            counts: Counter[str] = Counter()
+            for item in valid_sets:
+                counts.update(item.get(key, {}))
+            summary[key] = dict(counts)
         return summary
 
     @staticmethod
@@ -2974,6 +2980,7 @@ class BankStatementParser:
         request_times = [item.request_seconds for item in task_results]
         total_times = [item.total_seconds for item in task_results]
         status_codes = [item.status_code for item in task_results]
+        errors = [item.error for item in task_results if item.error]
         submitted_queue_sizes = [item.queue_size_at_submit for item in task_results]
         document_page_counts = [len(item.contents) for item in task_results]
         backend_batch_sizes = [item.batch_size for item in task_results]
@@ -2982,6 +2989,8 @@ class BankStatementParser:
             "task_count": float(len(task_results)),
             "success_count": float(sum(1 for code in status_codes if code == 200)),
             "failure_count": float(sum(1 for code in status_codes if code != 200)),
+            "status_code_counts": dict(Counter(str(code) for code in status_codes)),
+            "error_counts": dict(Counter(errors)),
             "queue_wait_mean": round(sum(queue_waits) / len(queue_waits), 6),
             "queue_wait_max": round(max(queue_waits), 6),
             "build_request_mean": round(sum(build_times) / len(build_times), 6),

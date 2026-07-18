@@ -109,6 +109,17 @@ class CriticalRetryParser(FakeDirectOCRParser):
         }
 
 
+class FailedDirectOCRParser(FakeDirectOCRParser):
+    def _ocr_tables_parallel(self, ocr_images, *, task_type="table"):
+        return [(page_idx, "") for page_idx, _ in ocr_images], {
+            "task_count": float(len(ocr_images)),
+            "success_count": 0.0,
+            "failure_count": float(len(ocr_images)),
+            "status_code_counts": {"503": len(ocr_images)},
+            "error_counts": {"backend unavailable": len(ocr_images)},
+        }
+
+
 class CountingParser:
     lock = threading.Lock()
     active = 0
@@ -317,6 +328,37 @@ def test_extract_glm_page_html_bytes_returns_cache_compatible_pages(monkeypatch,
     ]
     assert payload["timings"]["ocr_pages"] == 0.75
     assert payload["ocr_metrics"]["task_count"] == 2.0
+
+
+def test_extract_glm_page_html_bytes_fails_closed_when_every_ocr_task_fails(monkeypatch) -> None:
+    class FakeDocument:
+        page_count = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        BankParserService,
+        "_build_parser",
+        lambda self: FailedDirectOCRParser(1, threading.Barrier(1)),
+    )
+    monkeypatch.setattr(
+        "eosin.backend.bank_parser_service.fitz.open",
+        lambda _path: FakeDocument(),
+    )
+
+    service = BankParserService(parser_pool_size=1)
+    try:
+        with pytest.raises(RuntimeError, match="all OCR page tasks failed") as raised:
+            service.extract_glm_page_html_bytes("statement.pdf", b"fake pdf")
+    finally:
+        service.close()
+
+    assert "503" in str(raised.value)
+    assert "backend unavailable" in str(raised.value)
 
 
 def test_document_evidence_uses_text_ocr_for_invoice(monkeypatch) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -11,12 +12,13 @@ from decimal import Decimal, InvalidOperation
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
 
 
-DEFAULT_ENDPOINT = "https://noelalex-samuel2023--bank-parser.modal.run/parse/bank-statement"
+DEFAULT_ENDPOINT = os.getenv("EOSIN_DEV_PARSER_BASE_URL", "").rstrip("/")
 DEFAULT_PDF_DIR = Path("test_pdfs")
 DEFAULT_GROUND_TRUTH_DIR = Path("parsed test")
 DEFAULT_OUTPUT_DIR = Path("quality-compare-results")
@@ -49,7 +51,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare bank-parser JSON responses against CSV ground truth for test PDFs."
     )
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Parser /parse/bank-statement endpoint.")
+    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Development parser /parse/bank-statement endpoint.")
+    parser.add_argument(
+        "--allow-production",
+        action="store_true",
+        help="Explicitly allow the production bank-parser Modal endpoint.",
+    )
     parser.add_argument("--pdf-dir", default=str(DEFAULT_PDF_DIR), help="Directory containing test PDFs.")
     parser.add_argument("--ground-truth-dir", default=str(DEFAULT_GROUND_TRUTH_DIR), help="Directory containing expected CSVs.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Directory for JSON responses and reports.")
@@ -140,11 +147,38 @@ def load_response_rows(response_path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows).fillna("")
 
 
+def validate_endpoint(endpoint: str, *, allow_production: bool) -> str:
+    endpoint = endpoint.strip().rstrip("/")
+    if not endpoint:
+        raise ValueError("Set EOSIN_DEV_PARSER_BASE_URL or pass --endpoint.")
+    host = (urlparse(endpoint).hostname or "").lower()
+    if host.endswith("--bank-parser.modal.run") and not allow_production:
+        raise ValueError(
+            "Refusing the production bank-parser endpoint without --allow-production."
+        )
+    return endpoint
+
+
+def proxy_auth_headers() -> dict[str, str]:
+    token_id = os.getenv("MODAL_PROXY_AUTH_TOKEN_ID") or os.getenv(
+        "MODAL_PERSONAL_PROXY_AUTH_TOKEN_ID"
+    )
+    token_secret = os.getenv("MODAL_PROXY_AUTH_TOKEN_SECRET") or os.getenv(
+        "MODAL_PERSONAL_PROXY_AUTH_TOKEN_SECRET"
+    )
+    if bool(token_id) != bool(token_secret):
+        raise ValueError("Both Modal proxy-auth token values are required together.")
+    if not token_id:
+        return {}
+    return {"Modal-Key": token_id, "Modal-Secret": token_secret}
+
+
 def call_parser(endpoint: str, pdf_path: Path, response_path: Path, timeout: int) -> tuple[int, float]:
     started = time.perf_counter()
     with pdf_path.open("rb") as handle:
         response = requests.post(
             endpoint,
+            headers=proxy_auth_headers(),
             files={"file": (pdf_path.name, handle, "application/pdf")},
             timeout=timeout,
         )
@@ -275,6 +309,11 @@ def compare_one(
 
 def main() -> int:
     args = parse_args()
+    try:
+        endpoint = validate_endpoint(args.endpoint, allow_production=args.allow_production)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     pdf_dir = Path(args.pdf_dir)
     ground_truth_dir = Path(args.ground_truth_dir)
     output_dir = Path(args.output_dir)
@@ -296,7 +335,7 @@ def main() -> int:
             stem=stem,
             pdf_path=pdf_path,
             csv_path=csv_path,
-            endpoint=args.endpoint,
+            endpoint=endpoint,
             output_dir=output_dir,
             timeout=args.timeout,
             reuse_responses=args.reuse_responses,
@@ -310,7 +349,7 @@ def main() -> int:
         )
 
     summary = {
-        "endpoint": args.endpoint,
+        "endpoint": endpoint,
         "count": len(results),
         "fail_under_f1": args.fail_under_f1,
         "results": [result.__dict__ for result in results],

@@ -378,6 +378,18 @@ class BankParserService:
                     (int(evaluation["page_index"]), str(evaluation.get("raw_html", "")))
                     for evaluation in page_evaluations
                 ]
+                task_count = int(float(ocr_metrics.get("task_count", 0) or 0))
+                success_count = int(float(ocr_metrics.get("success_count", 0) or 0))
+                if (
+                    task_count > 0
+                    and success_count == 0
+                    and not any(str(html or "").strip() for _, html in ocr_results)
+                ):
+                    raise RuntimeError(
+                        "all OCR page tasks failed; "
+                        f"status_code_counts={ocr_metrics.get('status_code_counts', {})}; "
+                        f"error_counts={ocr_metrics.get('error_counts', {})}"
+                    )
                 page_quality = {
                     int(evaluation["page_index"]): {
                         "quality_score": int(evaluation.get("quality_score", 50)),

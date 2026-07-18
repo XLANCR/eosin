@@ -99,6 +99,26 @@ def test_http_document_backend_returns_one_result_per_document_page() -> None:
     assert result.batch_size == 1
 
 
+def test_http_document_backend_preserves_bounded_error_detail() -> None:
+    class RejectingClient:
+        def process(self, _request: dict) -> tuple[dict, int]:
+            return {"error": {"message": "unsupported request field"}}, 400
+
+    backend = HTTPDocumentOCRBackend(
+        page_loader=FakePageLoader(),
+        ocr_client=RejectingClient(),
+        max_workers=1,
+        queue_size=1,
+    )
+    try:
+        result = backend.submit([make_image()], page_indices=[0], task_type="table").result(timeout=2)
+    finally:
+        backend.close()
+
+    assert result.status_code == 400
+    assert result.error == '{"message": "unsupported request field"}'
+
+
 def test_batch_drain_backend_groups_ready_documents_into_one_flush() -> None:
     backend = BatchDrainOCRBackend(
         page_loader=FakePageLoader(),

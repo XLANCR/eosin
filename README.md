@@ -12,6 +12,16 @@ Use the deployed Modal web endpoint as `https://<workspace>--bank-parser.modal.r
 
 Production secrets are provisioned with `modal secret create eosin-tailscale` for Tailscale access and `modal secret create eosin-metrics-push` for push metrics credentials. pull-based monitoring is intentionally disabled for the Modal worker; use the configured push endpoint instead.
 
+Production is read-only by default during parser development and may be deployed only
+with explicit per-task authorization from the separate production account. Create the isolated environment
+once with `modal environment create dev`, then deploy development code with
+`scripts/deploy_dev.ps1`. The script forces Modal environment `dev`, app
+`eosin-glm-ocr-dev`, and web label `bank-parser-dev` even when the local `.env`
+points at production. `scripts/compare_parser_to_ground_truth.py` reads
+`EOSIN_DEV_PARSER_BASE_URL` and refuses the production `bank-parser` endpoint
+unless `--allow-production` is supplied explicitly. Keep proxy-auth values in
+the calling process environment; do not write them to repo files.
+
 Eosin does not impose application-level PDF byte-size or page-count limits.
 Uploads must still have a PDF filename and signature and must open successfully
 with PyMuPDF. Production work remains protected by Modal proxy authentication,
